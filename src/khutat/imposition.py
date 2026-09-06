@@ -1,17 +1,26 @@
 """Splitting and re-assembling imposed plan PDFs.
 
-The association ships each study plan as an *imposed* PDF: every printed sheet
-is A4 landscape and carries four half-scale copies of full-size pages, drawn as
-Form XObjects.  A plan that is logically 8 pages therefore arrives as 2 sheets.
+The association ships plans in two layouts, and a template may arrive as either:
 
-That layout is why naive coordinate extraction fails.  ``pypdf`` reports text
-positions inside the *form's* own coordinate space, and the page-level matrix
-that shrinks and moves the form is not applied, so all four panels of a sheet
-collapse onto identical coordinates.
+* **Imposed.**  Every printed sheet is A4 landscape and carries four half-scale
+  copies of full-size pages, drawn as Form XObjects.  A plan that is logically
+  8 pages arrives as 2 sheets.
+* **Already full-size.**  One logical page per PDF page, nothing nested.
 
-De-imposing first removes the problem entirely: once each form is its own
-full-size page, the form space *is* the page space and reported coordinates are
-correct with no matrix arithmetic anywhere else in the codebase.
+The imposed layout is why naive coordinate extraction fails.  ``pypdf`` reports
+text positions inside the *form's* own coordinate space, and the page-level
+matrix that shrinks and moves the form is not applied, so all four panels of a
+sheet collapse onto identical coordinates.
+
+De-imposing removes the problem entirely: once each form is its own full-size
+page, the form space *is* the page space and reported coordinates are correct
+with no matrix arithmetic anywhere else in the codebase.
+
+:func:`to_single_pages` is the entry point and covers both layouts — it splits
+an imposed file and passes an already-full-size one through untouched, so the
+rest of the pipeline never asks which kind it was handed.  The layout is decided
+by inspecting the file (:func:`is_imposed`), never by a per-file setting: the
+library is large and growing, and a setting is one more thing to get wrong.
 
 Panels are emitted in the source file's own imposition order — top row before
 bottom, left to right within a row — so page 1 of the returned list is the
@@ -33,6 +42,10 @@ from pypdf.generic import (
     FloatObject,
     NameObject,
 )
+
+# Share of the sheet a form must cover to count as a page panel rather than a
+# logo or a decorative rule.  Four-up panels each cover about a quarter.
+_MIN_PANEL_AREA_SHARE = 0.15
 
 # Matches "a b c d e f cm" optionally followed by "/Name Do" in a content stream.
 _PLACEMENT = re.compile(
@@ -95,6 +108,69 @@ def _page_xobjects(page: PageObject) -> DictionaryObject:
     return DictionaryObject() if xobjects is None else xobjects.get_object()
 
 
+def panel_placements(page: PageObject) -> list[Placement]:
+    """Placements large enough to be page panels, in reading order.
+
+    A form is a panel only if it covers a real share of the sheet.  Templates
+    also draw logos and decorations as Form XObjects, and those are placed at a
+    small scale like a panel is — size is what separates them.
+
+    Images are skipped outright.  ``Do`` paints images and forms alike, and the
+    full-size templates draw their letterhead as one, so subtype is checked
+    before the dictionary is read as a form.
+    """
+    xobjects = _page_xobjects(page)
+    sheet_area = float(page.mediabox.width) * float(page.mediabox.height)
+    if sheet_area <= 0:
+        return []
+
+    panels = []
+    for placement in find_placements(page):
+        form_ref = xobjects.get(f"/{placement.name}")
+        if form_ref is None:
+            continue
+        form = form_ref.get_object()
+        if form.get("/Subtype") != "/Form":
+            continue
+        bbox = [float(v) for v in form["/BBox"]]
+        drawn = abs(placement.scale_x * (bbox[2] - bbox[0])) * abs(
+            placement.scale_y * (bbox[3] - bbox[1])
+        )
+        if drawn / sheet_area >= _MIN_PANEL_AREA_SHARE:
+            panels.append(placement)
+    return panels
+
+
+def is_imposed(reader: PdfReader) -> bool:
+    """Whether the file nests several pages onto each sheet.
+
+    True when any sheet carries more than one panel, or carries a single panel
+    that has been scaled down — a lone shrunken panel is still a page inside a
+    form, so its coordinates need the same unwrapping.
+    """
+    for page in reader.pages:
+        panels = panel_placements(page)
+        if len(panels) > 1:
+            return True
+        if panels and (abs(panels[0].scale_x) < 0.99 or abs(panels[0].scale_y) < 0.99):
+            return True
+    return False
+
+
+def to_single_pages(reader: PdfReader) -> PdfWriter:
+    """One full-size page per logical plan page, whatever the source layout.
+
+    Imposed files are split; files that are already one page per page are
+    copied through unchanged rather than rebuilt, so a template that needs no
+    work is not put at risk of being altered by the code that fixes one.
+    """
+    if not is_imposed(reader):
+        writer = PdfWriter()
+        writer.append(reader)
+        return writer
+    return deimpose(reader)
+
+
 def deimpose(reader: PdfReader) -> PdfWriter:
     """Split an imposed plan into one full-size page per panel.
 
@@ -105,7 +181,7 @@ def deimpose(reader: PdfReader) -> PdfWriter:
 
     for page in reader.pages:
         xobjects = _page_xobjects(page)
-        for placement in find_placements(page):
+        for placement in panel_placements(page):
             form_ref = xobjects.get(f"/{placement.name}")
             if form_ref is None:
                 continue
@@ -135,10 +211,9 @@ def deimpose(reader: PdfReader) -> PdfWriter:
     return writer
 
 
-def deimpose_file(source: str, destination: str) -> int:
-    """De-impose ``source`` into ``destination``; returns the page count written."""
-    reader = PdfReader(source)
-    writer = deimpose(reader)
+def write_single_pages(source: str, destination: str) -> int:
+    """Write ``source`` to ``destination`` as full-size pages; returns the count."""
+    writer = to_single_pages(PdfReader(source))
     with open(destination, "wb") as handle:
         writer.write(handle)
     return len(writer.pages)

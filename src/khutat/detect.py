@@ -190,14 +190,25 @@ def text_by_cell(
 ) -> dict[Cell, tuple[str, float]]:
     """Reassemble each cell's text from the chunks painted inside it.
 
+    A chunk counts towards *every* cell that contains it, not just the tightest
+    one.  Table cells nest: when a label is too wide for its column the producer
+    wraps it onto two stacked line-boxes inside the real cell, so "الحلقة"
+    arrives as ``الحلق`` in one box and ``ة`` in the box beneath.  Neither box
+    matches the label alone; their shared parent does.  Counting a chunk once,
+    at its tightest cell, therefore loses every wrapped label — which is exactly
+    how the full-size templates differ from the imposed ones, where the same
+    labels happen to fit on one line.
+
     Returns the joined text and the largest font size seen, keyed by cell.
-    Chunks are concatenated right to left, which is their logical order here.
+    Chunks are concatenated right to left, then top to bottom, which is their
+    logical order here.
     """
     grouped: dict[Cell, list[Chunk]] = {}
     for chunk in chunks:
-        cell = _smallest_cell_at(cells, chunk.x + 0.5, chunk.y + chunk.size * 0.3)
-        if cell is not None:
-            grouped.setdefault(cell, []).append(chunk)
+        x, y = chunk.x + 0.5, chunk.y + chunk.size * 0.3
+        for cell in cells:
+            if cell.contains(x, y):
+                grouped.setdefault(cell, []).append(chunk)
 
     assembled: dict[Cell, tuple[str, float]] = {}
     for cell, members in grouped.items():
@@ -224,12 +235,8 @@ def match_label(run_text: str) -> str | None:
     return None
 
 
-def _smallest_cell_at(cells: list[Cell], x: float, y: float) -> Cell | None:
-    """The tightest cell containing a point — table nesting draws larger ones too."""
-    candidates = [c for c in cells if c.contains(x, y)]
-    if not candidates:
-        return None
-    return min(candidates, key=lambda c: (c.right - c.left) * (c.top - c.bottom))
+def _area(cell: Cell) -> float:
+    return (cell.right - cell.left) * (cell.top - cell.bottom)
 
 
 def _cell_to_left(cells: list[Cell], anchor: Cell) -> Cell | None:
@@ -255,7 +262,12 @@ def detect_fields(page: PageObject, page_index: int) -> list[Field]:
     fields: list[Field] = []
     claimed: set[tuple[float, float]] = set()
 
-    for label_cell, (text, size) in contents.items():
+    # Tightest cell first: a label's own cell should win over any ancestor that
+    # merely contains it, and over the page-sized rectangle that contains
+    # everything.  Ancestors that resolve to an already-claimed value cell are
+    # dropped below, so the tight match is the one that survives.
+    for label_cell in sorted(contents, key=_area):
+        text, size = contents[label_cell]
         label = match_label(text)
         if label is None:
             continue

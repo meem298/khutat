@@ -7,3 +7,4 @@ out/
 .session.log
 *.egg-info/
 sandbox/
+.cache/

@@ -193,21 +193,21 @@ PAGE = """<!doctype html>
 <body>
 <div class="wrap">
   <h1>خطط الطالبات</h1>
-  <p class="sub">ارفعي كشف إنجاز، واضغطي زرًا واحدًا.</p>
+  <p class="sub">رفع كشف إنجاز، ثم زر واحد.</p>
 
   <div class="card">
     <p class="step"><span class="num">١</span> كشف الطالبات</p>
     <div id="drop">
-      <strong id="dropTitle">اسحبي ملف إنجاز هنا</strong>
-      <span id="dropHint">أو اضغطي للاختيار — ملف Excel المصدَّر من النظام</span>
+      <strong id="dropTitle">سحب ملف إنجاز إلى هنا</strong>
+      <span id="dropHint">أو النقر للاختيار — ملف Excel المصدَّر من النظام</span>
     </div>
     <input type="file" id="file" accept=".xlsx" hidden>
   </div>
 
   <div class="card">
-    <p class="step"><span class="num">٢</span> بياناتك</p>
+    <p class="step"><span class="num">٢</span> البيانات الثابتة</p>
     <div class="grid" id="fields"></div>
-    <p class="hint">تُحفظ تلقائيًّا، فلن تعيدي كتابتها في المرة القادمة.</p>
+    <p class="hint">تُحفظ تلقائيًّا، فلا حاجة إلى إعادة كتابتها في المرة القادمة.</p>
   </div>
 
   <div class="card">
@@ -220,7 +220,7 @@ PAGE = """<!doctype html>
     </div>
   </div>
 
-  <button id="go" disabled>ولّدي الخطط</button>
+  <button id="go" disabled>توليد الخطط</button>
   <div id="out" style="margin-top:18px"></div>
 </div>
 
@@ -264,12 +264,12 @@ picker.addEventListener('change', () => { if (picker.files.length) take(picker.f
 
 function take(f) {
   if (!f.name.toLowerCase().endsWith('.xlsx')) {
-    out.innerHTML = '<div class="err">هذا ليس ملف Excel. صدّري الكشف من إنجاز بصيغة xlsx.</div>';
+    out.innerHTML = '<div class="err">هذا ليس ملف Excel. المطلوب كشف مُصدَّر من إنجاز بصيغة xlsx.</div>';
     return;
   }
   chosen = f;
   document.getElementById('dropTitle').textContent = '✓ ' + f.name;
-  document.getElementById('dropHint').textContent = 'اضغطي لاختيار ملف آخر';
+  document.getElementById('dropHint').textContent = 'نقر لاختيار ملف آخر';
   go.disabled = false; out.innerHTML = '';
 }
 
@@ -294,7 +294,7 @@ go.addEventListener('click', async () => {
   } catch (err) {
     out.innerHTML = '<div class="err">' + escape_(err.message) + '</div>';
   } finally {
-    go.disabled = false; go.textContent = 'ولّدي الخطط';
+    go.disabled = false; go.textContent = 'توليد الخطط';
   }
 });
 
@@ -312,13 +312,13 @@ function render(d) {
   html += '</div>';
   if (d.skipped.length) {
     html += '<div class="warn"><h3>⚠ ' + d.skipped.length +
-      ' طالبة بلا خطة — عبّئيها يدويًّا</h3><ul>' +
+      ' طالبة بلا خطة — تحتاج تعبئة يدوية</h3><ul>' +
       d.skipped.map(s => '<li><b>' + escape_(s.name) + '</b> — ' +
         escape_(s.plan) + ' — ' + escape_(s.reason) + '</li>').join('') +
       '</ul></div>';
   }
   html += '</div>';
-  html += '<button class="ghost" id="reveal">افتحي مجلد الخطط</button>';
+  html += '<button class="ghost" id="reveal">فتح مجلد الخطط</button>';
   out.innerHTML = html;
   document.getElementById('reveal').addEventListener('click', () => {
     fetch('/api/reveal', {method:'POST'});
@@ -439,9 +439,9 @@ def serve(output_dir: Path, port: int = 8731, open_browser: bool = True) -> None
     url = f"http://127.0.0.1:{port}/"
 
     print("خطط الطالبات جاهزة.")
-    print(f"  افتحي: {url}")
+    print(f"  العنوان: {url}")
     print(f"  المخرجات: {output_dir}")
-    print("  للإغلاق: أغلقي هذي النافذة، أو اضغطي Control+C")
+    print("  للإغلاق: إغلاق هذي النافذة، أو Control+C")
 
     if open_browser:
         threading.Timer(0.6, webbrowser.open, args=(url,)).start()

@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterator
 
-from pypdf import PageObject, PdfReader, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter, Transformation
 from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
@@ -207,6 +207,59 @@ def deimpose(reader: PdfReader) -> PdfWriter:
             new_page[NameObject("/Contents")] = writer._add_object(stream)
 
             writer.add_page(new_page)
+
+    return writer
+
+
+def impose(pages: list[PageObject], columns: int = 2, rows: int = 2) -> PdfWriter:
+    """Lay full-size pages out several to a sheet, for compact printing.
+
+    The inverse of :func:`deimpose`, and the reason a teacher can choose a
+    "مصغّرة" print: the association's own four-up sheets put a page in each
+    quadrant of a sheet the same size as the page, which is what this
+    reproduces — so a plan printed this way matches the ones teachers already
+    hand out.
+
+    Panels go in the order :func:`deimpose` reads them back out — top row
+    first, left to right within a row — so a sheet made here is laid out the
+    way the association lays out its own.
+
+    The structures differ, though: the association nests each page as a Form
+    XObject, while merging here inlines the content into the sheet's own
+    stream.  The printed result is the same, but :func:`is_imposed` does not
+    recognise the output as imposed and cannot split it again.  Impose last,
+    after filling — a sheet made here is a finished artefact, not an input.
+
+    A short final sheet is left partly empty rather than padded, and pages of
+    differing sizes are scaled to the first page's size so one odd page cannot
+    shift the grid.
+    """
+    writer = PdfWriter()
+    if not pages:
+        return writer
+
+    per_sheet = columns * rows
+    sheet_width = float(pages[0].mediabox.width)
+    sheet_height = float(pages[0].mediabox.height)
+    panel_width = sheet_width / columns
+    panel_height = sheet_height / rows
+
+    for start in range(0, len(pages), per_sheet):
+        sheet = PageObject.create_blank_page(width=sheet_width, height=sheet_height)
+        for slot, page in enumerate(pages[start : start + per_sheet]):
+            column = slot % columns
+            row = slot // columns
+            # PDF's origin is bottom-left, so the first row is the top one.
+            offset_x = column * panel_width
+            offset_y = sheet_height - (row + 1) * panel_height
+
+            scale_x = panel_width / float(page.mediabox.width)
+            scale_y = panel_height / float(page.mediabox.height)
+            transformation = (
+                Transformation().scale(scale_x, scale_y).translate(offset_x, offset_y)
+            )
+            sheet.merge_transformed_page(page, transformation)
+        writer.add_page(sheet)
 
     return writer
 

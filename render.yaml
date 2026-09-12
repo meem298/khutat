@@ -22,3 +22,8 @@ services:
         sync: false
       - key: KHUTAT_CREDIT
         sync: false
+      # The association's internal working folder, which carries curriculum 6.
+      # Not committed: the association publishes its finished plans itself but
+      # never published that folder, so the link is configured, not shipped.
+      - key: KHUTAT_DRIVE_FOLDER
+        sync: false

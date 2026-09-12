@@ -132,7 +132,13 @@ development but cannot be redistributed. `assets/fonts/NotoNaskhArabic-Regular.t
 
 - **`utq.org.sa/mnahig/`** — curricula 1–4, 70 plans, all PDF. Clean.
 - **A shared Drive folder ("توزيع المستويات")** — curriculum 6, which the site
-  does not publish. A workspace, not a library: names are inconsistent
+  does not publish. Reached only when `KHUTAT_DRIVE_FOLDER` is set; the link is
+  never committed, because the association published its finished plans itself
+  but never published that folder, and shipping it would republish it on their
+  behalf. Without the variable the catalogue is the website alone — 70 plans,
+  all usable, complete for curricula 1-4. Locally the variable lives in `.env`,
+  which is ignored and sourced by the launcher. A workspace, not a library:
+  names are inconsistent
   (`منهج 6 مستوى 9`, `منهج6-13.pdf`, `منهج٦ مستوى٣٠.docx`, `نسخة منهج 6 مستوى 16`)
   and most files are Word. Google Docs entries export to PDF by URL and are
   usable; bare `.docx` uploads need the Drive API and are refused.

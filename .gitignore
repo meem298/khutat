@@ -8,3 +8,4 @@ out/
 *.egg-info/
 sandbox/
 .cache/
+.env

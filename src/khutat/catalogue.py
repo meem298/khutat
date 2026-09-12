@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import threading
@@ -45,7 +46,13 @@ from pathlib import Path
 SITE_URL = "https://utq.org.sa/mnahig/"
 
 # The association's shared "توزيع المستويات" folder, which carries curriculum 6.
-DRIVE_FOLDER_ID = "<KHUTAT_DRIVE_FOLDER>"
+#
+# Deliberately not a literal.  The association publishes its finished plans on
+# its own website, but that folder is an internal workspace it did not publish,
+# so committing the link would be this project republishing it on the
+# association's behalf.  Set KHUTAT_DRIVE_FOLDER to enable it; without it the
+# catalogue is the public website alone, which is complete for curricula 1-4.
+DRIVE_FOLDER_ID = os.environ.get("KHUTAT_DRIVE_FOLDER", "")
 
 DEFAULT_CACHE = Path(".cache/khutat")
 
@@ -186,12 +193,19 @@ def _drive_url(kind: str, ident: str) -> str:
     return f"https://drive.google.com/uc?export=download&id={ident}"
 
 
-def fetch_drive_catalogue(folder_id: str = DRIVE_FOLDER_ID) -> list[Plan]:
+def fetch_drive_catalogue(folder_id: str = "") -> list[Plan]:
     """Walk the shared folder one level deep and collect anything plan-shaped.
 
     The folder mixes subfolders per curriculum with loose files, so both levels
     are scanned and every row is tested by name rather than by position.
+
+    Returns nothing when no folder is configured, so the site's own catalogue
+    still works for anyone who clones this without the association's link.
     """
+    folder_id = folder_id or DRIVE_FOLDER_ID
+    if not folder_id:
+        return []
+
     plans: list[Plan] = []
     seen: set[tuple[int, int, str]] = set()
 
@@ -233,6 +247,11 @@ def fetch_drive_catalogue(folder_id: str = DRIVE_FOLDER_ID) -> list[Plan]:
 def build_catalogue() -> list[Plan]:
     """Everything findable, site first so its PDFs win ties."""
     return fetch_site_catalogue() + fetch_drive_catalogue()
+
+
+def drive_configured() -> bool:
+    """Whether the working-folder source is switched on."""
+    return bool(DRIVE_FOLDER_ID)
 
 
 def save_catalogue(plans: list[Plan], cache_dir: Path = DEFAULT_CACHE) -> Path:

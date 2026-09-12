@@ -69,6 +69,9 @@ TEACHER_FIELDS = ("الحلقة", "المجمع/الدار", "اسم المعل�
 # Roughly the largest export worth accepting; a class list is a few tens of KB.
 _MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
+# Most students one shared request will build plans for; see run_batch.
+_MAX_STUDENTS = 200
+
 # How long a finished zip waits to be collected, and how many may wait at once.
 _DOWNLOAD_TTL_SECONDS = 15 * 60
 _MAX_PENDING = 8
@@ -136,6 +139,15 @@ def run_batch(roster_bytes: bytes, values: dict[str, str], compact: bool) -> Run
         students = read_roster(staged)
         if not students:
             raise ValueError("لم يُعثر على طالبات في هذا الملف")
+        if len(students) > _MAX_STUDENTS:
+            # Each plan is about a megabyte and the archive is assembled in
+            # memory, so an implausibly long roster would exhaust a small host
+            # and take the page down for everyone.  A halaqah is tens of
+            # students; the command line stays unbounded for real bulk work.
+            raise ValueError(
+                f"الكشف يحوي {len(students)} طالبة، والحد على الصفحة {_MAX_STUDENTS}. "
+                "للأعداد الأكبر يُستعمل الأمر المحلي."
+            )
 
         plans_dir = workspace / "plans"
         plans_dir.mkdir()

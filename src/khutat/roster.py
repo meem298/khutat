@@ -58,6 +58,9 @@ _CODE = re.compile(r"(?:([0-9]+)|(تلاوة))\s*[-–—]\s*([0-9]+)\s*$")
 # Characters a filename cannot carry, plus the separators that would nest it.
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
+# Ceiling on any single part of the workbook once decompressed; see _read_member.
+_MAX_SHEET_BYTES = 32 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class Student:
@@ -79,6 +82,27 @@ class Student:
         return f"{cleaned}.pdf"
 
 
+def _read_member(archive: zipfile.ZipFile, name: str) -> bytes:
+    """Read one entry, refusing anything that expands absurdly.
+
+    An .xlsx is a zip, and a zip says how large each entry becomes before you
+    read it.  Trusting the upload's own size is not enough: a 400 KB file can
+    declare a 400 MB sheet and take the process down with it, which on a shared
+    host means one visitor can stop everyone else's work.  A real class list's
+    sheet is a few tens of kilobytes, so this ceiling is far above any honest
+    file and far below what hurts.
+    """
+    info = archive.getinfo(name)
+    if info.file_size > _MAX_SHEET_BYTES:
+        raise ValueError("ملف غير صالح: محتواه أكبر من أي كشف طالبات")
+    with archive.open(info) as handle:
+        data = handle.read(_MAX_SHEET_BYTES + 1)
+    if len(data) > _MAX_SHEET_BYTES:
+        # The header can lie; this catches the case where it did.
+        raise ValueError("ملف غير صالح: محتواه أكبر من أي كشف طالبات")
+    return data
+
+
 def _cell_texts(path: Path) -> list[str]:
     """First-column text of every row, however the workbook stores strings."""
     with zipfile.ZipFile(path) as archive:
@@ -86,14 +110,14 @@ def _cell_texts(path: Path) -> list[str]:
 
         shared: list[str] = []
         if "xl/sharedStrings.xml" in names:
-            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            root = ElementTree.fromstring(_read_member(archive, "xl/sharedStrings.xml"))
             for item in root.findall(f"{_SHEET_NS}si"):
                 shared.append("".join(t.text or "" for t in item.iter(f"{_SHEET_NS}t")))
 
         sheets = sorted(n for n in names if n.startswith("xl/worksheets/sheet"))
         if not sheets:
             return []
-        sheet = ElementTree.fromstring(archive.read(sheets[0]))
+        sheet = ElementTree.fromstring(_read_member(archive, sheets[0]))
 
     texts: list[str] = []
     for row in sheet.iter(f"{_SHEET_NS}row"):

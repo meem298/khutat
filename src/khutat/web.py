@@ -1,26 +1,30 @@
-"""A local page for teachers: drop in the Injaz export, get the plans.
+"""A page for teachers: drop in the Injaz export, get the plans back.
 
 The command line is the wrong shape for the person this tool is for.  A
 teacher preparing a term's plans should not be assembling a six-flag command
 with her halaqah's name quoted inside it, and should not have to retype it
-next term.
+next term.  So this serves one page: she picks the export, her own details are
+already filled in from last time, one button generates, and the plans come
+back as a zip.
 
-So this serves one page on localhost and opens it in her browser.  She picks
-the export, her own details are already filled in from last time, she presses
-one button, and the plans appear in a folder the page can open for her.
+The page is **stateless by construction**, and that is the whole design.  It
+started as a convenience for one teacher on her own Mac, where a settings file
+and a fixed output folder were fine.  The moment a second teacher can reach
+it, both become faults rather than shortcuts:
 
-Design notes:
+* A settings file on the server is one file.  The last teacher to type would
+  overwrite everyone, and the next would open the page to find another
+  woman's halaqah and name already filled in — and could generate a whole
+  class under the wrong teacher's name before noticing.  Her details live in
+  her own browser instead.
+* A fixed output folder is one folder.  Two teachers generating at the same
+  moment would write into it together and their students would mix.  Each
+  request gets a temporary directory of its own, zipped and then deleted.
 
-* **No new dependencies.**  The server is :mod:`http.server`, and the export
-  is sent as base64 inside JSON rather than as a multipart upload — Python
-  3.13 removed the :mod:`cgi` module that used to parse those, and a hand-
-  rolled multipart parser is more code than the problem deserves.
-* **Bound to localhost only.**  Nothing here is exposed to the network.
-* **The teacher's own details are remembered**, because they change once a
-  term at most, while the class list changes constantly.
-* **Skipped students are shown as prominently as the successful ones.**  On
-  the command line an ignored warning costs a scroll; here it would cost a
-  teacher four missing plans discovered in front of her class.
+Nothing about a class is written where it outlives the request: the upload and
+the filled plans live in a temporary directory removed in a ``finally``, the
+finished zip waits in memory for a short while under a one-time token, and no
+student's name is ever logged.
 
 The bundled Noto face is this page's default.  That is a deployment choice and
 does not belong in the library, where the font stays a required argument.
@@ -31,98 +35,146 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import io
 import json
+import os
+import secrets
+import shutil
 import socket
-import subprocess
-import sys
+import tempfile
 import threading
+import time
 import webbrowser
+import zipfile
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .roster import generate, read_roster
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BUNDLED_FONT = PROJECT_ROOT / "assets" / "fonts" / "NotoNaskhArabic-Regular.ttf"
-SETTINGS_PATH = PROJECT_ROOT / ".cache" / "khutat" / "settings.json"
-DEFAULT_OUTPUT = Path.home() / "Documents" / "خطط الطالبات"
+
+# A dedicated work number the owner is happy to publish; overridable so the
+# number can change, or a colleague can host her own copy under her own name.
+WHATSAPP_NUMBER = os.environ.get("KHUTAT_WHATSAPP", "966552350036")
+CREDIT = os.environ.get("KHUTAT_CREDIT", "by MeeM")
 
 # The header values a teacher supplies once; the student's name comes from the
 # roster.  Both spellings of the teacher's label are sent because templates
 # disagree about which they use, and each takes the one it has.
-TEACHER_FIELDS = (
-    ("الحلقة", "حلقة النور"),
-    ("المجمع/الدار", "الفيحاء"),
-    ("اسم المعلم", ""),
-    ("العام والفصل", ""),
-)
+TEACHER_FIELDS = ("الحلقة", "المجمع/الدار", "اسم المعلم", "العام والفصل")
 
 # Roughly the largest export worth accepting; a class list is a few tens of KB.
 _MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
-
-def load_settings() -> dict[str, str]:
-    if not SETTINGS_PATH.is_file():
-        return {}
-    try:
-        stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return stored if isinstance(stored, dict) else {}
+# How long a finished zip waits to be collected, and how many may wait at once.
+_DOWNLOAD_TTL_SECONDS = 15 * 60
+_MAX_PENDING = 8
 
 
-def save_settings(values: dict[str, str]) -> None:
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(
-        json.dumps(values, ensure_ascii=False, indent=1), encoding="utf-8"
-    )
+class _Pending:
+    """Finished archives waiting to be downloaded, held only in memory.
+
+    A batch is handed back under a single-use token rather than written
+    anywhere, so a class list never touches the server's disk beyond the
+    temporary directory that produced it.  Entries expire, and the oldest is
+    dropped when too many pile up, so an abandoned batch cannot keep a
+    class's names in memory indefinitely.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, tuple[float, bytes]] = {}
+
+    def _expire(self, now: float) -> None:
+        stale = [k for k, (created, _) in self._items.items()
+                 if now - created > _DOWNLOAD_TTL_SECONDS]
+        for key in stale:
+            del self._items[key]
+        while len(self._items) > _MAX_PENDING:
+            oldest = min(self._items, key=lambda k: self._items[k][0])
+            del self._items[oldest]
+
+    def put(self, payload: bytes) -> str:
+        token = secrets.token_urlsafe(16)
+        with self._lock:
+            now = time.time()
+            self._items[token] = (now, payload)
+            self._expire(now)
+        return token
+
+    def take(self, token: str) -> bytes | None:
+        with self._lock:
+            entry = self._items.pop(token, None)
+        if entry is None:
+            return None
+        created, payload = entry
+        if time.time() - created > _DOWNLOAD_TTL_SECONDS:
+            return None
+        return payload
+
+
+PENDING = _Pending()
 
 
 @dataclass
 class RunOutcome:
     written: list[str]
     skipped: list[dict[str, str]]
-    out_dir: str
+    archive: bytes
 
 
-def run_batch(
-    roster_bytes: bytes, values: dict[str, str], out_dir: Path, compact: bool
-) -> RunOutcome:
-    """Write the class's plans from an in-memory export."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+def run_batch(roster_bytes: bytes, values: dict[str, str], compact: bool) -> RunOutcome:
+    """Fill a class's plans and return them zipped, leaving nothing behind."""
+    workspace = Path(tempfile.mkdtemp(prefix="khutat-"))
+    try:
+        staged = workspace / "roster.xlsx"
+        staged.write_bytes(roster_bytes)
 
-    # read_roster reads a file and the export arrived as bytes, so it has to be
-    # written somewhere — but not into the output folder.  A teacher selects
-    # everything there and prints it, and a spreadsheet in with the plans would
-    # go to the printer too.
-    staged = SETTINGS_PATH.parent / "last-roster.xlsx"
-    staged.parent.mkdir(parents=True, exist_ok=True)
-    staged.write_bytes(roster_bytes)
+        students = read_roster(staged)
+        if not students:
+            raise ValueError("لم يُعثر على طالبات في هذا الملف")
 
-    students = read_roster(staged)
-    if not students:
-        raise ValueError("لم يُعثر على طالبات في هذا الملف")
+        plans_dir = workspace / "plans"
+        plans_dir.mkdir()
 
-    supplied = {k: v for k, v in values.items() if v.strip()}
-    if "اسم المعلم" in supplied:
-        supplied.setdefault("المعلم", supplied["اسم المعلم"])
+        supplied = {k: v for k, v in values.items() if v.strip()}
+        if "اسم المعلم" in supplied:
+            supplied.setdefault("المعلم", supplied["اسم المعلم"])
 
-    result = generate(
-        students,
-        supplied,
-        out_dir,
-        BUNDLED_FONT,
-        compact=compact,
-    )
-    return RunOutcome(
-        written=[student.name for student, _ in result.written],
-        skipped=[
-            {"name": student.name, "plan": student.plan_label, "reason": reason}
-            for student, reason in result.skipped
-        ],
-        out_dir=str(out_dir),
-    )
+        result = generate(students, supplied, plans_dir, BUNDLED_FONT, compact=compact)
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for _, path in result.written:
+                archive.write(path, arcname=path.name)
+            if result.skipped:
+                # The teacher will print the zip's contents and file them; a
+                # note inside it travels with the plans, where a message shown
+                # once in a browser does not.
+                lines = ["طالبات بلا خطة — تحتاج تعبئة يدوية:", ""]
+                lines += [
+                    f"- {student.name} — {student.plan_label} — {reason}"
+                    for student, reason in result.skipped
+                ]
+                archive.writestr(
+                    "الطالبات المتعذرات.txt", "\n".join(lines) + "\n"
+                )
+
+        return RunOutcome(
+            written=[student.name for student, _ in result.written],
+            skipped=[
+                {"name": student.name, "plan": student.plan_label, "reason": reason}
+                for student, reason in result.skipped
+            ],
+            archive=buffer.getvalue(),
+        )
+    finally:
+        # Runs even when filling raised: nothing about a class survives the
+        # request on disk.
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 PAGE = """<!doctype html>
@@ -138,7 +190,7 @@ PAGE = """<!doctype html>
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink);
          font:16px/1.7 -apple-system, "SF Arabic", "Geeza Pro", sans-serif; }
-  .wrap { max-width:760px; margin:0 auto; padding:32px 20px 64px; }
+  .wrap { max-width:760px; margin:0 auto; padding:32px 20px 40px; }
   h1 { font-size:26px; margin:0 0 4px; }
   .sub { color:var(--muted); margin:0 0 28px; }
   .card { background:#fff; border:1px solid var(--line); border-radius:14px;
@@ -188,6 +240,15 @@ PAGE = """<!doctype html>
          border-radius:11px; padding:15px 17px; }
   .names { columns:2; font-size:14.5px; }
   @media (max-width:560px) { .names { columns:1; } }
+  .privacy { font-size:13px; color:var(--muted); text-align:center;
+             margin:22px 0 0; }
+  footer { text-align:center; padding:26px 20px 40px; color:var(--muted);
+           font-size:14px; }
+  footer .mark { font-weight:600; color:var(--ink); letter-spacing:.3px; }
+  footer a { color:var(--accent); text-decoration:none; font-weight:600;
+             border:1px solid var(--accent); border-radius:999px;
+             padding:6px 15px; display:inline-block; margin-top:10px; }
+  footer a:hover { background:var(--ok-bg); }
 </style>
 </head>
 <body>
@@ -207,7 +268,7 @@ PAGE = """<!doctype html>
   <div class="card">
     <p class="step"><span class="num">٢</span> البيانات الثابتة</p>
     <div class="grid" id="fields"></div>
-    <p class="hint">تُحفظ تلقائيًّا، فلا حاجة إلى إعادة كتابتها في المرة القادمة.</p>
+    <p class="hint">تُحفظ في هذا المتصفح وحده، فلا حاجة إلى إعادة كتابتها في المرة القادمة.</p>
   </div>
 
   <div class="card">
@@ -222,24 +283,39 @@ PAGE = """<!doctype html>
 
   <button id="go" disabled>توليد الخطط</button>
   <div id="out" style="margin-top:18px"></div>
+
+  <p class="privacy">أسماء الطالبات تُستعمل لتعبئة الخطط ثم تُحذف فور انتهاء الطلب.
+    لا تُحفظ ولا تُسجَّل.</p>
 </div>
+
+<footer>
+  <div class="mark">__CREDIT__</div>
+  __CONTACT__
+</footer>
 
 <script>
 const FIELDS = __FIELDS__;
+const STORE = 'khutat.fields';
 const drop = document.getElementById('drop');
 const picker = document.getElementById('file');
 const go = document.getElementById('go');
 const out = document.getElementById('out');
 let chosen = null;
 
+// Kept in this browser, never on the server: a shared settings file would let
+// one teacher's details appear prefilled for the next.
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (e) { saved = {}; }
+
 const box = document.getElementById('fields');
-for (const [label, value] of FIELDS) {
+for (const label of FIELDS) {
   const id = 'f_' + encodeURIComponent(label);
   const w = document.createElement('div');
   const l = document.createElement('label');
   l.textContent = label; l.htmlFor = id;
   const i = document.createElement('input');
-  i.type = 'text'; i.id = id; i.dataset.label = label; i.value = value;
+  i.type = 'text'; i.id = id; i.dataset.label = label;
+  i.value = saved[label] || '';
   i.addEventListener('change', saveFields);
   w.append(l, i); box.append(w);
 }
@@ -249,8 +325,7 @@ function values() {
   return v;
 }
 function saveFields() {
-  fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(values())});
+  try { localStorage.setItem(STORE, JSON.stringify(values())); } catch (e) {}
 }
 
 drop.addEventListener('click', () => picker.click());
@@ -318,11 +393,15 @@ function render(d) {
       '</ul></div>';
   }
   html += '</div>';
-  html += '<button class="ghost" id="reveal">فتح مجلد الخطط</button>';
+  if (d.token) {
+    html += '<button class="ghost" id="dl">تنزيل الخطط</button>';
+  }
   out.innerHTML = html;
-  document.getElementById('reveal').addEventListener('click', () => {
-    fetch('/api/reveal', {method:'POST'});
-  });
+  const dl = document.getElementById('dl');
+  if (dl) {
+    dl.addEventListener('click', () => { location.href = '/api/download?token=' + d.token; });
+    dl.click();
+  }
 }
 </script>
 </body>
@@ -331,15 +410,18 @@ function render(d) {
 
 
 class Handler(BaseHTTPRequestHandler):
-    output_dir = DEFAULT_OUTPUT
-
-    def log_message(self, *args) -> None:  # keep the terminal quiet
+    def log_message(self, *args) -> None:
+        # Deliberately silent: the default log line would record every request,
+        # and nothing about a class should reach a server log.
         pass
 
-    def _send(self, code: int, body: bytes, content_type: str) -> None:
+    def _send(self, code: int, body: bytes, content_type: str,
+              extra: dict[str, str] | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -350,39 +432,62 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
-    def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > _MAX_UPLOAD_BYTES * 2:
-            raise ValueError("حجم الطلب غير مقبول")
-        return json.loads(self.rfile.read(length))
-
     def do_GET(self) -> None:
-        if self.path not in ("/", "/index.html"):
-            self._json(404, {"error": "not found"})
+        parsed = urlparse(self.path)
+        if parsed.path in ("/", "/index.html"):
+            contact = ""
+            if WHATSAPP_NUMBER:
+                message = "استفسار عن أداة خطط الطالبات"
+                contact = (
+                    f'<a href="https://wa.me/{WHATSAPP_NUMBER}'
+                    f'?text={_quote(message)}" target="_blank" rel="noopener">'
+                    "للاستفسار عبر واتساب</a>"
+                )
+            page = (
+                PAGE.replace("__FIELDS__", json.dumps(TEACHER_FIELDS, ensure_ascii=False))
+                .replace("__CREDIT__", CREDIT)
+                .replace("__CONTACT__", contact)
+            )
+            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             return
-        stored = load_settings()
-        fields = [[label, stored.get(label, default)] for label, default in TEACHER_FIELDS]
-        page = PAGE.replace("__FIELDS__", json.dumps(fields, ensure_ascii=False))
-        self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+
+        if parsed.path == "/api/download":
+            token = (parse_qs(parsed.query).get("token") or [""])[0]
+            payload = PENDING.take(token)
+            if payload is None:
+                self._json(404, {"error": "انتهت صلاحية الرابط — أعيدي التوليد"})
+                return
+            name = "khutat.zip"
+            self._send(
+                200,
+                payload,
+                "application/zip",
+                {
+                    "Content-Disposition":
+                        f"attachment; filename={name}; "
+                        "filename*=UTF-8''%D8%AE%D8%B7%D8%B7-%D8%A7%D9%84%D8%B7%D8%A7"
+                        "%D9%84%D8%A8%D8%A7%D8%AA.zip"
+                },
+            )
+            return
+
+        if parsed.path == "/healthz":
+            self._send(200, b"ok", "text/plain; charset=utf-8")
+            return
+
+        self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
         try:
-            if self.path == "/api/settings":
-                payload = self._read_json()
-                save_settings({str(k): str(v) for k, v in payload.items()})
-                self._json(200, {"ok": True})
-                return
-
-            if self.path == "/api/reveal":
-                subprocess.run(["open", str(self.output_dir)], check=False)
-                self._json(200, {"ok": True})
-                return
-
-            if self.path != "/api/generate":
+            if urlparse(self.path).path != "/api/generate":
                 self._json(404, {"error": "not found"})
                 return
 
-            payload = self._read_json()
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > _MAX_UPLOAD_BYTES * 2:
+                raise ValueError("حجم الطلب غير مقبول")
+            payload = json.loads(self.rfile.read(length))
+
             try:
                 data = base64.b64decode(payload.get("roster", ""), validate=True)
             except (binascii.Error, ValueError):
@@ -393,26 +498,23 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("الملف أكبر مما ينبغي لكشف طالبات")
 
             values = {str(k): str(v) for k, v in (payload.get("values") or {}).items()}
-            save_settings(values)
+            outcome = run_batch(data, values, compact=payload.get("size") == "compact")
 
-            outcome = run_batch(
-                data,
-                values,
-                self.output_dir,
-                compact=payload.get("size") == "compact",
-            )
+            token = PENDING.put(outcome.archive) if outcome.written else None
             self._json(
                 200,
-                {
-                    "written": outcome.written,
-                    "skipped": outcome.skipped,
-                    "out_dir": outcome.out_dir,
-                },
+                {"written": outcome.written, "skipped": outcome.skipped, "token": token},
             )
         except ValueError as error:
             self._json(400, {"error": str(error)})
-        except Exception as error:  # surfaced in the page rather than the terminal
+        except Exception as error:  # surfaced in the page, not the terminal
             self._json(500, {"error": f"{type(error).__name__}: {error}"})
+
+
+def _quote(text: str) -> str:
+    from urllib.parse import quote
+
+    return quote(text)
 
 
 def _free_port(preferred: int) -> int:
@@ -428,22 +530,22 @@ def _free_port(preferred: int) -> int:
         return probe.getsockname()[1]
 
 
-def serve(output_dir: Path, port: int = 8731, open_browser: bool = True) -> None:
+def serve(host: str = "127.0.0.1", port: int = 8731, open_browser: bool = True) -> None:
     if not BUNDLED_FONT.is_file():
-        print(f"الخط غير موجود عند {BUNDLED_FONT}", file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(f"الخط غير موجود عند {BUNDLED_FONT}")
 
-    Handler.output_dir = Path(output_dir)
-    port = _free_port(port)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    url = f"http://127.0.0.1:{port}/"
+    local = host in ("127.0.0.1", "localhost")
+    if local:
+        port = _free_port(port)
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    url = f"http://{'127.0.0.1' if local else host}:{port}/"
 
     print("خطط الطالبات جاهزة.")
     print(f"  العنوان: {url}")
-    print(f"  المخرجات: {output_dir}")
     print("  للإغلاق: إغلاق هذي النافذة، أو Control+C")
 
-    if open_browser:
+    if open_browser and local:
         threading.Timer(0.6, webbrowser.open, args=(url,)).start()
     try:
         server.serve_forever()
@@ -456,13 +558,19 @@ def serve(output_dir: Path, port: int = 8731, open_browser: bool = True) -> None
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m khutat.web",
-        description="Serve the teacher-facing page on localhost.",
+        description="Serve the teacher-facing page.",
     )
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--port", type=int, default=8731)
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="127.0.0.1 for this machine only; 0.0.0.0 when hosted",
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("PORT", 8731))
+    )
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
-    serve(args.output, args.port, open_browser=not args.no_browser)
+    serve(args.host, args.port, open_browser=not args.no_browser)
     return 0
 
 

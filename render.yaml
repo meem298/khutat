@@ -1,0 +1,24 @@
+# Deployment for Render (https://render.com).
+#
+# The page holds no state between requests, so a single instance on the free
+# plan is enough and restarting it loses nothing but the template cache, which
+# refills itself on the next request.
+services:
+  - type: web
+    name: khutat
+    runtime: python
+    plan: free
+    buildCommand: pip install -e .
+    # Render supplies $PORT; binding 0.0.0.0 is what makes the service
+    # reachable from outside the container.
+    startCommand: python -m khutat.web --host 0.0.0.0 --port $PORT --no-browser
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      # Set in Render's dashboard, not here, so the number can change without
+      # a commit — and so a colleague hosting her own copy puts in her own.
+      - key: KHUTAT_WHATSAPP
+        sync: false
+      - key: KHUTAT_CREDIT
+        sync: false

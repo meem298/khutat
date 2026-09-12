@@ -52,6 +52,11 @@ resolve. Always invoke `.venv/bin/python` explicitly.
 
 `--size مكبرة` (default) is one page per sheet; `مصغرة` is four to a sheet.
 
+```bash
+# The page teachers actually use; --host 0.0.0.0 only when hosted
+.venv/bin/python -m khutat.web
+```
+
 ## Verifying a change
 
 **There is no test suite.** `pytest` is in the dev extra and `tests/` is empty.
@@ -140,6 +145,31 @@ of curriculum 3 — level first. Match the code by its pattern at the end of the
 string; splitting on whitespace truncates names that contain double spaces.
 Injaz also writes a stylesheet `openpyxl` refuses to load and stores cells as
 inline strings, which is why the sheet XML is read directly.
+
+## The web page is stateless on purpose
+
+`web.py` began as a convenience for one teacher on her own Mac, where a
+settings file and a fixed output folder were fine. Both became faults the
+moment a second teacher could reach it, and the fix is the design:
+
+- **Her details live in her browser** (`localStorage`), never on the server. A
+  server-side settings file is one file: the last teacher to type would
+  overwrite everyone, and the next would find another woman's halaqah and name
+  prefilled — and could generate a whole class under the wrong teacher's name.
+- **Each request gets its own temp directory**, zipped and removed in a
+  `finally`. A fixed output folder is one folder, and two teachers generating
+  at once would mix their students into it.
+- **The finished zip waits in memory under a single-use token** with a TTL, so
+  a class list never reaches the server's disk beyond the temp directory that
+  produced it. Request logging is disabled for the same reason.
+
+Do not add a server-side store, a fixed output path, or an endpoint that runs
+a command on the host — an earlier `/api/reveal` called `open` and had to go.
+
+**Never put a real student's name in this repository.** Examples in docs and
+docstrings use invented ones (فاطمة عبدالله الشمري); the roster that exercises
+the real pipeline stays outside the repo, and `out/`, `.cache/` and `sandbox/`
+are ignored.
 
 ## Conventions
 

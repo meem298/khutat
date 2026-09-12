@@ -34,6 +34,7 @@ import argparse
 import json
 import re
 import sys
+import threading
 import unicodedata
 import urllib.error
 import urllib.request
@@ -274,6 +275,10 @@ class TemplateUnavailable(Exception):
     """No template that detection can read exists for this plan."""
 
 
+# Serialises downloads into the shared cache; see ensure_template.
+_DOWNLOAD_LOCK = threading.Lock()
+
+
 def ensure_template(
     manhaj: int,
     level: int,
@@ -299,13 +304,25 @@ def ensure_template(
     if destination.is_file() and destination.stat().st_size > 0:
         return destination
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    data = _get(best.url)
-    if not data.startswith(b"%PDF"):
-        raise TemplateUnavailable(
-            f"منهج {manhaj} مستوى {level}: المنزَّل ليس PDF ({best.url})"
-        )
-    destination.write_bytes(data)
+    # Two teachers asking for the same new plan at the same moment would
+    # otherwise download and write it concurrently, and a reader could pick up
+    # a half-written file.  One downloader at a time, and the second finds the
+    # file already there.
+    with _DOWNLOAD_LOCK:
+        if destination.is_file() and destination.stat().st_size > 0:
+            return destination
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        data = _get(best.url)
+        if not data.startswith(b"%PDF"):
+            raise TemplateUnavailable(
+                f"منهج {manhaj} مستوى {level}: المنزَّل ليس PDF ({best.url})"
+            )
+        # Written under a temporary name and moved into place, so a reader
+        # never sees a partial file even if this process dies mid-write.
+        staging = destination.with_suffix(".part")
+        staging.write_bytes(data)
+        staging.replace(destination)
     return destination
 
 

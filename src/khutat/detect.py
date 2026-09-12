@@ -65,8 +65,18 @@ _TATWEEL = "ـ"
 
 
 def normalise(text: str) -> str:
-    """Fold spelling variants so label matching survives small differences."""
+    """Fold spelling variants so label matching survives small differences.
+
+    NFKC is what makes this work across producers.  Some writers store Arabic
+    as abstract letters and let the font shape them; others — a Google Docs PDF
+    export, for one — store the shaped glyphs themselves, so the text comes back
+    as presentation forms (U+FE70-U+FEFF) and "اسم الطالب" never matches
+    "اﺳم اﻟطﺎﻟب" as a string.  NFKC maps every presentation form back to its
+    base letter, and splits the lam-alef ligature, so both kinds of document
+    compare equal.
+    """
     stripped = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    stripped = unicodedata.normalize("NFKC", stripped)
     stripped = stripped.replace(_TATWEEL, "")
     stripped = stripped.translate(_ARABIC_NORMALISE)
     return re.sub(r"\s+", " ", stripped).strip()

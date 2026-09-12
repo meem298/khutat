@@ -18,8 +18,14 @@ Two other properties of the source documents shape this module:
   rather than by guessing at gap widths — a gap threshold wide enough to rejoin
   "العام و" + "الفصل" also wrongly swallows the neighbouring value, whereas cell
   membership is exact.
-* **Coordinates are only trustworthy after de-imposition.**  Run
-  :mod:`khutat.imposition` first; see that module for why.
+* **Coordinates mean nothing on their own.**  A rectangle is drawn in whatever
+  space the transformation matrix establishes at that moment, so the content
+  stream is walked with the matrix tracked rather than scanned for ``re``.  The
+  association's own PDFs happen to set no transformation at all, but a plan
+  converted from Word flips the y axis and scales by 0.75, and reading raw
+  coordinates there puts every cell in the wrong place.
+* **De-impose first.**  Run :mod:`khutat.imposition` before detecting; see that
+  module for why.
 
 Detection is driven by label text and drawn geometry, never by hard-coded
 coordinates, so the same code handles every template without per-file tuning.
@@ -27,6 +33,7 @@ coordinates, so the same code handles every template without per-file tuning.
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -43,22 +50,12 @@ FIELD_LABELS: tuple[str, ...] = (
     "المعلم",
 )
 
-# Chunks whose baselines differ by less than this are treated as one line.
-_BASELINE_TOLERANCE = 1.5
-
-# Extra room a chunk may sit apart and still continue the same word.
-_RUN_GAP = 4.0
-
 # Rectangles thinner than this are borders and rules, not cells.
 _MIN_CELL_WIDTH = 12.0
 _MIN_CELL_HEIGHT = 6.0
 
 # Breathing room kept between a drawn value and its cell borders.
 _CELL_PADDING = 3.0
-
-_RECT = re.compile(
-    rb"([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+re(?![A-Za-z])"
-)
 
 _ARABIC_NORMALISE = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ى": "ي", "ة": "ه"})
 _TATWEEL = "ـ"
@@ -143,55 +140,176 @@ class Field:
         return (self.bottom + self.top) / 2
 
 
+Matrix = tuple[float, float, float, float, float, float]
+
+_IDENTITY: Matrix = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+def _multiply(first: Matrix, second: Matrix) -> Matrix:
+    """``first`` then ``second`` — PDF's row-vector order."""
+    a1, b1, c1, d1, e1, f1 = first
+    a2, b2, c2, d2, e2, f2 = second
+    return (
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    )
+
+
+def _apply(matrix: Matrix, x: float, y: float) -> tuple[float, float]:
+    a, b, c, d, e, f = matrix
+    return (a * x + c * y + e, b * x + d * y + f)
+
+
+def _vertical_scale(matrix: Matrix) -> float:
+    """How much the matrix stretches the y axis, for scaling a font size."""
+    _, _, c, d, _, _ = matrix
+    return math.hypot(c, d) or 1.0
+
+
 def read_chunks(page: PageObject) -> list[Chunk]:
-    """Extract every painted text run on ``page`` with its position."""
+    """Extract every painted text run on ``page`` with its position.
+
+    A glyph's position is its text matrix *then* the transformation in force,
+    so the two are combined rather than reading the text matrix alone.  The
+    association's own PDFs set no transformation at all, which is why the text
+    matrix was enough for them; a PDF exported from Word or Google Docs flips
+    the y axis and scales by 0.75, and ignoring that puts every chunk in the
+    wrong place.
+    """
     chunks: list[Chunk] = []
 
     def visit(text, cm, tm, font_dict, font_size):
         cleaned = "".join(c for c in text if unicodedata.category(c) != "Cf")
-        if cleaned.strip():
-            chunks.append(
-                Chunk(text=cleaned, x=tm[4], y=tm[5], size=float(font_size or 0))
-            )
+        if not cleaned.strip():
+            return
+        combined = _multiply(tuple(tm), tuple(cm))
+        x, y = combined[4], combined[5]
+        size = float(font_size or 0) * _vertical_scale(tuple(cm))
+        chunks.append(Chunk(text=cleaned, x=x, y=y, size=size))
 
     page.extract_text(visitor_text=visit)
     return chunks
 
 
-def read_cells(page: PageObject) -> list[Cell]:
-    """Extract the table cells the page draws, de-duplicated.
+# Numbers, operators, and the literal forms that must not be read as either.
+_CONTENT_TOKEN = re.compile(
+    rb"(?P<num>[-+]?(?:\d+\.?\d*|\.\d+))"
+    rb"|(?P<name>/[^\s/\[\]<>(){}%]*)"
+    rb"|(?P<string>\((?:\\.|[^()\\])*\))"
+    rb"|(?P<hex><[0-9A-Fa-f\s]*>)"
+    rb"|(?P<op>[A-Za-z'\"*]+)",
+    re.S,
+)
 
-    The drawing lives inside the page's Form XObject, and the de-imposed page
-    places that form with an identity matrix, so rectangle coordinates are
-    already page coordinates.
+# Inline images carry raw bytes between ID and EI that must not be tokenised.
+_INLINE_IMAGE = re.compile(rb"\bBI\b.*?\bEI\b", re.S)
+
+
+def _xobjects_of(resources) -> dict:
+    if resources is None:
+        return {}
+    xobjects = resources.get_object().get("/XObject")
+    return {} if xobjects is None else xobjects.get_object()
+
+
+def _collect_rectangles(
+    data: bytes, resources, ctm: Matrix, out: list[Cell], depth: int = 0
+) -> None:
+    """Walk a content stream, tracking the matrix, and record every rectangle.
+
+    ``re`` gives a rectangle in the space current at that moment, so the four
+    corners are mapped through the transformation in force before they mean
+    anything on the page.  ``q``/``Q`` save and restore it, and ``Do`` on a form
+    enters a nested space that is the form's own matrix followed by whatever
+    placed it.
     """
-    streams: list[bytes] = []
+    if depth > 8:
+        return
 
+    data = _INLINE_IMAGE.sub(b" ", data)
+    xobjects = _xobjects_of(resources)
+
+    stack: list[Matrix] = []
+    operands: list[float] = []
+    last_name: bytes | None = None
+
+    for token in _CONTENT_TOKEN.finditer(data):
+        if token.lastgroup == "num":
+            operands.append(float(token.group()))
+            continue
+        if token.lastgroup == "name":
+            last_name = token.group()
+            continue
+        if token.lastgroup in ("string", "hex"):
+            continue
+
+        operator = token.group()
+        if operator == b"q":
+            stack.append(ctm)
+        elif operator == b"Q":
+            if stack:
+                ctm = stack.pop()
+        elif operator == b"cm" and len(operands) >= 6:
+            ctm = _multiply(tuple(operands[-6:]), ctm)
+        elif operator == b"re" and len(operands) >= 4:
+            x, y, width, height = operands[-4:]
+            corners = [
+                _apply(ctm, x, y),
+                _apply(ctm, x + width, y),
+                _apply(ctm, x, y + height),
+                _apply(ctm, x + width, y + height),
+            ]
+            xs = [p[0] for p in corners]
+            ys = [p[1] for p in corners]
+            out.append(Cell(left=min(xs), bottom=min(ys), right=max(xs), top=max(ys)))
+        elif operator == b"Do" and last_name is not None:
+            reference = xobjects.get(last_name.decode("latin-1"))
+            form = reference.get_object() if reference is not None else None
+            if form is not None and form.get("/Subtype") == "/Form":
+                inner = ctm
+                matrix = form.get("/Matrix")
+                if matrix is not None:
+                    inner = _multiply(tuple(float(v) for v in matrix), ctm)
+                _collect_rectangles(
+                    form.get_data(), form.get("/Resources"), inner, out, depth + 1
+                )
+
+        operands.clear()
+
+    return
+
+
+def read_cells(page: PageObject) -> list[Cell]:
+    """Extract the table cells the page draws, in page coordinates."""
     contents = page.get_contents()
-    if contents is not None:
-        streams.append(contents.get_data())
+    if contents is None:
+        return []
 
-    resources = page.get("/Resources")
-    if resources is not None:
-        xobjects = resources.get_object().get("/XObject")
-        if xobjects is not None:
-            for ref in xobjects.get_object().values():
-                form = ref.get_object()
-                if form.get("/Subtype") == "/Form":
-                    streams.append(form.get_data())
+    found: list[Cell] = []
+    _collect_rectangles(contents.get_data(), page.get("/Resources"), _IDENTITY, found)
 
     seen: set[tuple[float, float, float, float]] = set()
     cells: list[Cell] = []
-    for stream in streams:
-        for match in _RECT.finditer(stream):
-            x, y, w, h = (float(v) for v in match.groups())
-            if w < _MIN_CELL_WIDTH or h < _MIN_CELL_HEIGHT:
-                continue
-            key = (round(x, 2), round(y, 2), round(w, 2), round(h, 2))
-            if key in seen:
-                continue
-            seen.add(key)
-            cells.append(Cell(left=x, bottom=y, right=x + w, top=y + h))
+    for cell in found:
+        if (
+            cell.right - cell.left < _MIN_CELL_WIDTH
+            or cell.top - cell.bottom < _MIN_CELL_HEIGHT
+        ):
+            continue
+        key = (
+            round(cell.left, 2),
+            round(cell.bottom, 2),
+            round(cell.right, 2),
+            round(cell.top, 2),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        cells.append(cell)
     return cells
 
 

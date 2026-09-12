@@ -16,11 +16,12 @@ Arabic-Indic digits and stray prefixes, and deliberately strict about one
 thing: the digit must follow the word منهج directly, so ``منهج تعاهد 3`` and
 ``بيانات توزيع مستويات المنهج`` are not mistaken for plans.
 
-Only PDFs are usable today.  A Word or Google Docs file can be exported to PDF,
-but such exports draw their tables under transformation matrices that
-:mod:`khutat.detect` does not yet apply, so they yield no fields; offering one
-would produce a silently empty plan.  :func:`ensure_template` refuses instead
-and says which formats it found, which is a better failure than a blank page.
+PDFs and Google Docs are usable; a bare Word upload is not.  Docs exports to
+PDF through a plain URL, and since :mod:`khutat.detect` applies transformation
+matrices those exports read correctly.  A ``.docx`` sitting in Drive has no
+such export URL — converting it needs the Drive API and an account — so
+:func:`ensure_template` refuses it and says which formats it found, which is a
+better failure than a blank page.
 
 Fetching is explicit and cached.  The catalogue is read from the network only
 on ``--refresh``, and a template is downloaded once and reused, so a batch of
@@ -58,10 +59,8 @@ _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 # may be the word مستوى, punctuation, whitespace, several of those, or nothing.
 _PLAN_NAME = re.compile(r"منهج\s*([0-9]+)\s*[-_.\s]*(?:مستوى)?\s*[-_.\s]*([0-9]+)")
 
-# Headings on the site: "المنهج رقم (٣) — خمسة أسطر يومياً".
-_SITE_GROUP = re.compile(
-    r'(?is)<button[^>]*class="[^"]*levels-toggle[^"]*"[^>]*>\s*<span[^>]*>(.*?)</span>'
-)
+# Headings on the site ("المنهج رقم (٣) — خمسة أسطر يومياً") and the level
+# links beneath them, matched together so document order gives the grouping.
 _SITE_TOKEN = re.compile(
     r'(?is)(?:<button[^>]*class="[^"]*levels-toggle[^"]*"[^>]*>\s*<span[^>]*>(.*?)</span>)'
     r'|(?:<a\b([^>]*class="[^"]*level-link[^"]*"[^>]*)>(.*?)</a>)'
@@ -104,8 +103,12 @@ class Plan:
 
     @property
     def usable(self) -> bool:
-        """Whether detection can read this file as it stands."""
-        return self.kind == "pdf"
+        """Whether a PDF can be obtained from this entry without an account.
+
+        A Google Doc exports to PDF through a plain URL, so it counts; a Word
+        upload would need the Drive API to convert, so it does not.
+        """
+        return self.kind in ("pdf", "gdoc")
 
     @property
     def filename(self) -> str:
@@ -289,7 +292,7 @@ def ensure_template(
     if not best.usable:
         kinds = ", ".join(sorted({p.kind for p in found}))
         raise TemplateUnavailable(
-            f"منهج {manhaj} مستوى {level}: متاح بصيغة {kinds} فقط، ولا يُقرأ بعد"
+            f"منهج {manhaj} مستوى {level}: متاح بصيغة {kinds} فقط، ويحتاج تحويلًا يدويًّا"
         )
 
     destination = cache_dir / "templates" / best.filename
@@ -318,10 +321,10 @@ def format_catalogue(plans: list[Plan]) -> str:
         usable = sorted({p.level for p in entries if p.usable})
         missing = [lv for lv in levels if lv not in usable]
         lines.append(
-            f"منهج {manhaj}: {len(levels)} مستوى، منها {len(usable)} بصيغة PDF"
+            f"منهج {manhaj}: {len(levels)} مستوى، منها {len(usable)} جاهز"
         )
         if missing:
-            lines.append(f"    بلا PDF: {', '.join(str(lv) for lv in missing)}")
+            lines.append(f"    يحتاج تحويلًا يدويًّا: {', '.join(str(lv) for lv in missing)}")
     lines.append("")
     lines.append(
         f"المجموع: {len({(p.manhaj, p.level) for p in plans})} خطة، "

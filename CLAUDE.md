@@ -146,8 +146,14 @@ development but cannot be redistributed. `assets/fonts/NotoNaskhArabic-Regular.t
   Students on them are skipped by name. This is not a bug to fix in code.
 
 **The Injaz export** packs the student's name and plan code into column A
-separated by a run of spaces: `فاطمة عبدالله الشمري    4 - 3` means level 4
-of curriculum 3 — level first. Match the code by its pattern at the end of the
+separated by a run of spaces: `فاطمة عبدالله الشمري    4 - 3` means
+curriculum 4, level 3 — curriculum first. The recitation track writes تلاوة in
+the curriculum slot (`تلاوة-1` is recitation, level 1), which settles the order.
+It is easy to get backwards: Injaz shows the code inside right-to-left text,
+where bidi can swap the two numbers on screen. This was once implemented level
+first, and every plan came out for the wrong curriculum — verify a change here
+by reading the generated plan's cover, which prints its own curriculum and
+level. Match the code by its pattern at the end of the
 string; splitting on whitespace truncates names that contain double spaces.
 Injaz also writes a stylesheet `openpyxl` refuses to load and stores cells as
 inline strings, which is why the sheet XML is read directly.

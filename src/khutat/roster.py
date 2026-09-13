@@ -9,9 +9,15 @@ separated by a run of spaces:
 The remaining columns are the web page's own buttons ("غائب", "جديد",
 "الانضباط") serialised as text, and carry nothing.
 
-The code reads level first, curriculum second: ``4 - 3`` is level 4 of
-curriculum 3.  Some students are on the recitation track instead, written
-``تلاوة-1``, which has no numeric level.
+The code reads curriculum first, level second: ``4 - 3`` is curriculum 4,
+level 3.  Students on the recitation track have the word تلاوة where the
+curriculum number would be — ``تلاوة-1`` is recitation, level 1 — which is
+what settles the order: the slot that can hold a track name is the curriculum.
+
+The order is easy to get backwards.  The export stores the characters in the
+order above, but Injaz shows them inside right-to-left text, where the bidi
+algorithm can lay the two numbers out the other way round on screen.  Read the
+stored string, never a screenshot of it.
 
 Two details of the export shape the reader:
 
@@ -51,8 +57,8 @@ _SHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
-# The plan code sits at the end: a level (a number, or the word تلاوة) then the
-# curriculum number.
+# The plan code sits at the end: the curriculum (a number, or the word تلاوة
+# for the recitation track) then the level number.
 _CODE = re.compile(r"(?:([0-9]+)|(تلاوة))\s*[-–—]\s*([0-9]+)\s*$")
 
 # Characters a filename cannot carry, plus the separators that would nest it.
@@ -67,14 +73,15 @@ class Student:
     """One row of the export: who she is and which plan she is on."""
 
     name: str
-    manhaj: int
-    level: int | None
+    manhaj: int | None  # None on the recitation track, which has no curriculum number
+    level: int
     track: str  # "حفظ" or "تلاوة"
 
     @property
     def plan_label(self) -> str:
-        where = self.level if self.level is not None else self.track
-        return f"منهج {self.manhaj} مستوى {where}"
+        if self.manhaj is None:
+            return f"{self.track} مستوى {self.level}"
+        return f"منهج {self.manhaj} مستوى {self.level}"
 
     @property
     def safe_filename(self) -> str:
@@ -154,12 +161,12 @@ def parse_row(raw: str) -> Student | None:
     if not name:
         return None
 
-    level = int(match.group(1)) if match.group(1) else None
+    manhaj = int(match.group(1)) if match.group(1) else None
     return Student(
         name=name,
-        manhaj=int(match.group(3)),
-        level=level,
-        track="حفظ" if level is not None else "تلاوة",
+        manhaj=manhaj,
+        level=int(match.group(3)),
+        track="حفظ" if manhaj is not None else "تلاوة",
     )
 
 
@@ -214,12 +221,12 @@ def generate(
     kwargs = {} if cache_dir is None else {"cache_dir": cache_dir}
 
     result = RosterResult()
-    templates: dict[tuple[int, int | None], Path | str] = {}
+    templates: dict[tuple[int | None, int], Path | str] = {}
 
     for student in students:
         key = (student.manhaj, student.level)
         if key not in templates:
-            if student.level is None:
+            if student.manhaj is None:
                 templates[key] = f"{student.track}: لا خطط رقمية"
             else:
                 try:

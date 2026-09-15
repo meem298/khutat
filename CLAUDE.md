@@ -10,7 +10,9 @@ templates with a blank header — student name, halaqah, centre, teacher — whi
 teachers currently fill in by hand, once per student per term.
 
 This tool reads a teacher's class export, fetches each student's template, and
-writes the filled plans. The whole job is one command (`khutat.roster`).
+writes the filled plans. The whole job is one command (`khutat.roster`), or
+one button on the bundled web page (`khutat.web`), which also has a
+single-student mode that skips the roster upload entirely.
 
 The user is a beginner programmer and the repository's owner; she is learning
 from this project as well as using it. Explain *why* a change is shaped the way
@@ -141,7 +143,12 @@ development but cannot be redistributed. `assets/fonts/NotoNaskhArabic-Regular.t
   names are inconsistent
   (`منهج 6 مستوى 9`, `منهج6-13.pdf`, `منهج٦ مستوى٣٠.docx`, `نسخة منهج 6 مستوى 16`)
   and most files are Word. Google Docs entries export to PDF by URL and are
-  usable; bare `.docx` uploads need the Drive API and are refused.
+  usable directly; a bare `.docx` upload is refused by `ensure_template`
+  unless `KHUTAT_CONVERT_DOCX` is set, in which case it is rendered to PDF
+  locally with headless LibreOffice (`soffice` must be on `PATH`). That flag
+  is off by default — curricula 1-4 never need it, and most setups won't have
+  LibreOffice installed — so leaving a plan as Word in the folder still means
+  most deployments report it as needing manual conversion.
 - **Curriculum 5 and the recitation (تلاوة) track have no digital plans.**
   Students on them are skipped by name. This is not a bug to fix in code.
 
@@ -168,11 +175,13 @@ moment a second teacher could reach it, and the fix is the design:
   server-side settings file is one file: the last teacher to type would
   overwrite everyone, and the next would find another woman's halaqah and name
   prefilled — and could generate a whole class under the wrong teacher's name.
-- **Each request gets its own temp directory**, zipped and removed in a
-  `finally`. A fixed output folder is one folder, and two teachers generating
-  at once would mix their students into it.
-- **The finished zip waits in memory under a single-use token** with a TTL, so
-  a class list never reaches the server's disk beyond the temp directory that
+- **Each request gets its own temp directory**, zipped (batch mode) or read
+  directly (single-student mode) and removed in a `finally`. A fixed output
+  folder is one folder, and two teachers generating at once would mix their
+  students into it.
+- **The finished file waits in memory under a single-use token** with a TTL —
+  a zip for the batch path, a bare PDF for the single-student path — so a
+  class list never reaches the server's disk beyond the temp directory that
   produced it. Request logging is disabled for the same reason.
 
 Do not add a server-side store, a fixed output path, or an endpoint that runs
@@ -183,6 +192,16 @@ docstrings use invented ones (فاطمة عبدالله الشمري); the roste
 the real pipeline stays outside the repo, and `out/`, `.cache/` and `sandbox/`
 are ignored.
 
+## Deployment
+
+`render.yaml` deploys the page to Render as a single free-tier instance — the
+page holds no state between requests, so restarting it loses nothing but the
+template cache, which refills itself on the next request. `KHUTAT_WHATSAPP`,
+`KHUTAT_CREDIT` and `KHUTAT_DRIVE_FOLDER` are set in Render's dashboard rather
+than the file, for the same reason `.env` isn't committed locally: the number
+and the association's working folder can change without a commit, and a
+colleague hosting her own copy puts in her own.
+
 ## Conventions
 
 - **Exit status 1 means something needs a human.** A template where detection
@@ -191,6 +210,6 @@ are ignored.
 - **Commit messages explain why.** Imperative subject line, then a body giving
   the reasoning and the verification performed — the code already shows what
   changed. Commits are authored by the repository owner with a
-  `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
+  `Co-Authored-By:` trailer for whichever Claude model made the change.
 - `out/`, `.cache/`, and `sandbox/` are ignored; `sandbox/` is the owner's
   scratch space for experiments.

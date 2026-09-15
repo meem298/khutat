@@ -1,15 +1,21 @@
 """Finding the association's plan templates and fetching them on demand.
 
-Templates live in two places, and neither is a tidy library:
+Templates live in several places, and none is a tidy library:
 
 * **The association's site** (``utq.org.sa/mnahig/``) publishes the daily plans
   for the four released memorisation curricula as PDFs on Google Drive — 70
   plans, one link per level, grouped under a heading per curriculum.
-* **A shared Drive folder** holds the working files, including curriculum 6,
-  which the site does not publish at all.  That folder is a workspace rather
-  than a library: names are inconsistent (``منهج 6 مستوى 9``, ``منهج6-13.pdf``,
-  ``منهج٦ مستوى٣٠.docx``, ``نسخة منهج 6 مستوى 16``) and most files are Word
-  documents rather than PDFs.
+* **The association's own shared Drive folder** holds its working files,
+  including curriculum 6, which the site does not publish at all.  That
+  folder is a workspace rather than a library: names are inconsistent
+  (``منهج 6 مستوى 9``, ``منهج6-13.pdf``, ``منهج٦ مستوى٣٠.docx``,
+  ``نسخة منهج 6 مستوى 16``) and most files are Word documents rather than
+  PDFs.
+* **Zero or more further Drive folders** a contributor publishes separately —
+  a set of curriculum-6 plans someone converted to PDF and shared from her
+  own Drive, say, rather than editing the association's working folder
+  directly.  ``KHUTAT_DRIVE_FOLDER`` takes a comma-separated list for this;
+  an earlier folder's entry for a given plan wins over a later one's.
 
 :func:`parse_plan_name` is therefore deliberately forgiving about separators,
 Arabic-Indic digits and stray prefixes, and deliberately strict about one
@@ -22,7 +28,15 @@ transformation matrices those exports read correctly.  A ``.docx`` sitting in
 Drive has no such export URL, so :func:`ensure_template` refuses it and says
 which formats it found, which is a better failure than a blank page — unless
 ``KHUTAT_CONVERT_DOCX`` is set, in which case it is converted locally with
-LibreOffice instead.
+LibreOffice instead.  Treat that flag as unproven: a LibreOffice export was
+tested against real curriculum-6 plans and produced a PDF that renders
+correctly but that pypdf reads back as the wrong characters (a font-subsetting
+interaction, not a khutat bug), which makes :mod:`khutat.detect` find no
+fields at all.  Converting to PDF by hand through Google Docs — as the working
+entries in these folders already are — is the path known to work; do not
+point a deployment at ``KHUTAT_CONVERT_DOCX`` without re-verifying it against
+the LibreOffice version actually installed there, field count included, not
+just a visual read of the rendered page.
 
 Fetching is explicit and cached.  The catalogue is read from the network only
 on ``--refresh``, and a template is downloaded once and reused, so a batch of
@@ -48,14 +62,22 @@ from pathlib import Path
 
 SITE_URL = "https://utq.org.sa/mnahig/"
 
-# The association's shared "توزيع المستويات" folder, which carries curriculum 6.
+# The association's shared "توزيع المستويات" folder, which carries curriculum 6,
+# plus any further folders of converted plans a contributor has published
+# separately (own Drive, own sharing) rather than editing the association's
+# working folder directly.
 #
 # Deliberately not a literal.  The association publishes its finished plans on
 # its own website, but that folder is an internal workspace it did not publish,
 # so committing the link would be this project republishing it on the
-# association's behalf.  Set KHUTAT_DRIVE_FOLDER to enable it; without it the
-# catalogue is the public website alone, which is complete for curricula 1-4.
-DRIVE_FOLDER_ID = os.environ.get("KHUTAT_DRIVE_FOLDER", "")
+# association's behalf.  Set KHUTAT_DRIVE_FOLDER (comma-separated for more than
+# one) to enable it; without it the catalogue is the public website alone,
+# which is complete for curricula 1-4.
+DRIVE_FOLDER_IDS = [
+    folder.strip()
+    for folder in os.environ.get("KHUTAT_DRIVE_FOLDER", "").split(",")
+    if folder.strip()
+]
 
 # Off by default: converting is an extra step (needs LibreOffice installed)
 # that most setups don't need, since curricula 1-4 are all plain PDF already.
@@ -241,7 +263,7 @@ def fetch_drive_catalogue(folder_id: str = "") -> list[Plan]:
     Returns nothing when no folder is configured, so the site's own catalogue
     still works for anyone who clones this without the association's link.
     """
-    folder_id = folder_id or DRIVE_FOLDER_ID
+    folder_id = folder_id or (DRIVE_FOLDER_IDS[0] if DRIVE_FOLDER_IDS else "")
     if not folder_id:
         return []
 
@@ -284,13 +306,18 @@ def fetch_drive_catalogue(folder_id: str = "") -> list[Plan]:
 
 
 def build_catalogue() -> list[Plan]:
-    """Everything findable, site first so its PDFs win ties."""
-    return fetch_site_catalogue() + fetch_drive_catalogue()
+    """Everything findable: the site first so its PDFs win ties, then every
+    configured Drive folder in order, so an earlier folder's entry for a plan
+    wins over a later one's."""
+    plans = fetch_site_catalogue()
+    for folder_id in DRIVE_FOLDER_IDS:
+        plans += fetch_drive_catalogue(folder_id)
+    return plans
 
 
 def drive_configured() -> bool:
-    """Whether the working-folder source is switched on."""
-    return bool(DRIVE_FOLDER_ID)
+    """Whether at least one working-folder source is switched on."""
+    return bool(DRIVE_FOLDER_IDS)
 
 
 def save_catalogue(plans: list[Plan], cache_dir: Path = DEFAULT_CACHE) -> Path:

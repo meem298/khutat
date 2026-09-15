@@ -16,12 +16,13 @@ Arabic-Indic digits and stray prefixes, and deliberately strict about one
 thing: the digit must follow the word منهج directly, so ``منهج تعاهد 3`` and
 ``بيانات توزيع مستويات المنهج`` are not mistaken for plans.
 
-PDFs and Google Docs are usable; a bare Word upload is not.  Docs exports to
-PDF through a plain URL, and since :mod:`khutat.detect` applies transformation
-matrices those exports read correctly.  A ``.docx`` sitting in Drive has no
-such export URL — converting it needs the Drive API and an account — so
-:func:`ensure_template` refuses it and says which formats it found, which is a
-better failure than a blank page.
+PDFs and Google Docs are usable; a bare Word upload is not, by default.  Docs
+exports to PDF through a plain URL, and since :mod:`khutat.detect` applies
+transformation matrices those exports read correctly.  A ``.docx`` sitting in
+Drive has no such export URL, so :func:`ensure_template` refuses it and says
+which formats it found, which is a better failure than a blank page — unless
+``KHUTAT_CONVERT_DOCX`` is set, in which case it is converted locally with
+LibreOffice instead.
 
 Fetching is explicit and cached.  The catalogue is read from the network only
 on ``--refresh``, and a template is downloaded once and reused, so a batch of
@@ -34,7 +35,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import threading
 import unicodedata
 import urllib.error
@@ -53,6 +56,10 @@ SITE_URL = "https://utq.org.sa/mnahig/"
 # association's behalf.  Set KHUTAT_DRIVE_FOLDER to enable it; without it the
 # catalogue is the public website alone, which is complete for curricula 1-4.
 DRIVE_FOLDER_ID = os.environ.get("KHUTAT_DRIVE_FOLDER", "")
+
+# Off by default: converting is an extra step (needs LibreOffice installed)
+# that most setups don't need, since curricula 1-4 are all plain PDF already.
+CONVERT_DOCX = os.environ.get("KHUTAT_CONVERT_DOCX", "") not in ("", "0", "false", "False")
 
 DEFAULT_CACHE = Path(".cache/khutat")
 
@@ -127,6 +134,38 @@ def _get(url: str, timeout: float = 120) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read()
+
+
+def _convert_docx_to_pdf(data: bytes) -> bytes:
+    """Render a .docx to PDF with headless LibreOffice."""
+    with tempfile.TemporaryDirectory(prefix="khutat-docx-") as workdir:
+        work = Path(workdir)
+        source = work / "source.docx"
+        source.write_bytes(data)
+        try:
+            subprocess.run(
+                [
+                    "soffice", "--headless", "--norestore",
+                    "--convert-to", "pdf", "--outdir", str(work), str(source),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+        except FileNotFoundError:
+            raise TemplateUnavailable(
+                "تحويل docx يحتاج LibreOffice مثبتًا (أمر soffice غير موجود)"
+            )
+        except subprocess.CalledProcessError as error:
+            detail = error.stderr.decode("utf-8", "replace").strip()
+            raise TemplateUnavailable(f"تعذّر تحويل الملف عبر LibreOffice: {detail}")
+        except subprocess.TimeoutExpired:
+            raise TemplateUnavailable("تحويل الملف عبر LibreOffice تجاوز المهلة")
+
+        converted = work / "source.pdf"
+        if not converted.is_file():
+            raise TemplateUnavailable("لم ينتج LibreOffice ملف PDF")
+        return converted.read_bytes()
 
 
 def fetch_site_catalogue(url: str = SITE_URL) -> list[Plan]:
@@ -313,7 +352,8 @@ def ensure_template(
         raise TemplateUnavailable(f"منهج {manhaj} مستوى {level}: لا مصدر معروف")
 
     best = found[0]
-    if not best.usable:
+    convert = best.kind == "docx" and CONVERT_DOCX
+    if not best.usable and not convert:
         kinds = ", ".join(sorted({p.kind for p in found}))
         raise TemplateUnavailable(
             f"منهج {manhaj} مستوى {level}: متاح بصيغة {kinds} فقط، ويحتاج تحويلًا يدويًّا"
@@ -333,6 +373,9 @@ def ensure_template(
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         data = _get(best.url)
+        if convert:
+            data = _convert_docx_to_pdf(data)
+
         if not data.startswith(b"%PDF"):
             raise TemplateUnavailable(
                 f"منهج {manhaj} مستوى {level}: المنزَّل ليس PDF ({best.url})"

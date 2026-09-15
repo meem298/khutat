@@ -38,6 +38,7 @@ import binascii
 import io
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -51,7 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .roster import generate, read_roster
+from .roster import Student, generate, read_roster
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BUNDLED_FONT = PROJECT_ROOT / "assets" / "fonts" / "NotoNaskhArabic-Regular.ttf"
@@ -65,6 +66,25 @@ CREDIT = os.environ.get("KHUTAT_CREDIT", "by MeeM")
 # roster.  Both spellings of the teacher's label are sent because templates
 # disagree about which they use, and each takes the one it has.
 TEACHER_FIELDS = ("الحلقة", "المجمع/الدار", "اسم المعلم", "العام والفصل")
+
+# The two digit scripts the pipeline actually reads a plan code in (see
+# roster.py's own translation table) — Latin 0-9, and the Arabic-Indic digits
+# Injaz itself writes.  Anything else (Persian ۰-۹, fullwidth, …) is rejected
+# here rather than handed to int(), which would silently accept scripts this
+# tool never sees in a real class list.
+_DIGITS = re.compile(r"^[0-9٠-٩]+$")
+_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def _digits_to_int(raw: object, label: str) -> int:
+    text = str(raw if raw is not None else "").strip()
+    if not _DIGITS.match(text):
+        raise ValueError(f"{label} يجب أن يكون أرقامًا فقط (٠-٩ أو 0-9)")
+    value = int(text.translate(_ARABIC_DIGITS))
+    if value <= 0:
+        raise ValueError(f"{label} يجب أن يكون أكبر من صفر")
+    return value
+
 
 # Roughly the largest export worth accepting; a class list is a few tens of KB.
 _MAX_UPLOAD_BYTES = 8 * 1024 * 1024
@@ -89,10 +109,10 @@ class _Pending:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._items: dict[str, tuple[float, bytes]] = {}
+        self._items: dict[str, tuple[float, bytes, str, str]] = {}
 
     def _expire(self, now: float) -> None:
-        stale = [k for k, (created, _) in self._items.items()
+        stale = [k for k, (created, _, _, _) in self._items.items()
                  if now - created > _DOWNLOAD_TTL_SECONDS]
         for key in stale:
             del self._items[key]
@@ -100,23 +120,23 @@ class _Pending:
             oldest = min(self._items, key=lambda k: self._items[k][0])
             del self._items[oldest]
 
-    def put(self, payload: bytes) -> str:
+    def put(self, payload: bytes, content_type: str, filename: str) -> str:
         token = secrets.token_urlsafe(16)
         with self._lock:
             now = time.time()
-            self._items[token] = (now, payload)
+            self._items[token] = (now, payload, content_type, filename)
             self._expire(now)
         return token
 
-    def take(self, token: str) -> bytes | None:
+    def take(self, token: str) -> tuple[bytes, str, str] | None:
         with self._lock:
             entry = self._items.pop(token, None)
         if entry is None:
             return None
-        created, payload = entry
+        created, payload, content_type, filename = entry
         if time.time() - created > _DOWNLOAD_TTL_SECONDS:
             return None
-        return payload
+        return payload, content_type, filename
 
 
 PENDING = _Pending()
@@ -189,6 +209,34 @@ def run_batch(roster_bytes: bytes, values: dict[str, str], compact: bool) -> Run
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def run_single(student: Student, values: dict[str, str], compact: bool) -> tuple[bytes, str]:
+    """Fill one student's plan and return its bytes and a filename.
+
+    Reuses ``generate`` with a one-element list rather than a parallel
+    single-student path, so a missing digital plan (curriculum 5, the
+    recitation track, an unconfigured drive folder) is reported with the
+    same message a roster upload would give for that student.
+    """
+    workspace = Path(tempfile.mkdtemp(prefix="khutat-"))
+    try:
+        plans_dir = workspace / "plans"
+        plans_dir.mkdir()
+
+        supplied = {k: v for k, v in values.items() if v.strip()}
+        if "اسم المعلم" in supplied:
+            supplied.setdefault("المعلم", supplied["اسم المعلم"])
+
+        result = generate([student], supplied, plans_dir, BUNDLED_FONT, compact=compact)
+        if result.skipped:
+            _, reason = result.skipped[0]
+            raise ValueError(f"{student.plan_label} — {reason}")
+
+        _, path = result.written[0]
+        return path.read_bytes(), student.safe_filename
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 PAGE = """<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -220,9 +268,15 @@ PAGE = """<!doctype html>
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:560px) { .grid { grid-template-columns:1fr; } }
   label { display:block; font-size:14px; color:var(--muted); margin-bottom:5px; }
-  input[type=text] { width:100%; padding:10px 12px; font:inherit; font-size:15px;
+  input[type=text], select { width:100%; padding:10px 12px; font:inherit; font-size:15px;
          border:1px solid var(--line); border-radius:9px; background:#fff; }
-  input[type=text]:focus { outline:2px solid var(--accent); border-color:transparent; }
+  input[type=text]:focus, select:focus { outline:2px solid var(--accent); border-color:transparent; }
+  .tabs { display:flex; gap:8px; margin-bottom:18px; }
+  .tabs button { flex:1; background:#fff; color:var(--muted); font-weight:600;
+         border:1px solid var(--line); }
+  .tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .tabs button:hover:not(.active) { background:var(--ok-bg); color:var(--ink); }
+  [hidden] { display:none !important; }
   .sizes { display:flex; gap:10px; flex-wrap:wrap; }
   .sizes label { flex:1; min-width:210px; border:1px solid var(--line);
          border-radius:11px; padding:13px 15px; cursor:pointer; margin:0;
@@ -266,15 +320,51 @@ PAGE = """<!doctype html>
 <body>
 <div class="wrap">
   <h1>خطط الطالبات</h1>
-  <p class="sub">رفع كشف إنجاز، ثم زر واحد.</p>
+  <p class="sub" id="sub">رفع كشف إنجاز، ثم زر واحد.</p>
 
-  <div class="card">
+  <div class="tabs">
+    <button type="button" id="tabBatch" class="active">كشف طالبات</button>
+    <button type="button" id="tabOne">طالبة واحدة</button>
+  </div>
+
+  <div class="card" id="batchCard">
     <p class="step"><span class="num">١</span> كشف الطالبات</p>
     <div id="drop">
       <strong id="dropTitle">سحب ملف إنجاز إلى هنا</strong>
       <span id="dropHint">أو النقر للاختيار — ملف Excel المصدَّر من النظام</span>
     </div>
     <input type="file" id="file" accept=".xlsx" hidden>
+  </div>
+
+  <div class="card" id="oneCard" hidden>
+    <p class="step"><span class="num">١</span> بيانات الطالبة</p>
+    <div class="grid">
+      <div>
+        <label for="oneName">اسم الطالبة</label>
+        <input type="text" id="oneName">
+      </div>
+      <div>
+        <label for="oneTrack">المسار</label>
+        <select id="oneTrack">
+          <option value="حفظ">حفظ</option>
+          <option value="تلاوة">تلاوة</option>
+        </select>
+      </div>
+      <div id="oneManhajWrap">
+        <label for="oneManhaj">المنهج</label>
+        <select id="oneManhaj">
+          <option value="1">١</option>
+          <option value="2">٢</option>
+          <option value="3">٣</option>
+          <option value="4">٤</option>
+          <option value="6">٦</option>
+        </select>
+      </div>
+      <div>
+        <label for="oneLevel">المستوى</label>
+        <input type="text" id="oneLevel" inputmode="numeric" pattern="[0-9٠-٩]*">
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -294,6 +384,7 @@ PAGE = """<!doctype html>
   </div>
 
   <button id="go" disabled>توليد الخطط</button>
+  <button id="goOne" hidden>توليد الخطة</button>
   <div id="out" style="margin-top:18px"></div>
 
   <p class="privacy">أسماء الطالبات تُستعمل لتعبئة الخطط ثم تُحذف فور انتهاء الطلب.
@@ -340,6 +431,46 @@ function saveFields() {
   try { localStorage.setItem(STORE, JSON.stringify(values())); } catch (e) {}
 }
 
+const tabBatch = document.getElementById('tabBatch');
+const tabOne = document.getElementById('tabOne');
+const batchCard = document.getElementById('batchCard');
+const oneCard = document.getElementById('oneCard');
+const goOne = document.getElementById('goOne');
+const sub = document.getElementById('sub');
+
+function showBatch() {
+  tabBatch.classList.add('active'); tabOne.classList.remove('active');
+  batchCard.hidden = false; oneCard.hidden = true;
+  go.hidden = false; goOne.hidden = true;
+  sub.textContent = 'رفع كشف إنجاز، ثم زر واحد.';
+  out.innerHTML = '';
+}
+function showOne() {
+  tabOne.classList.add('active'); tabBatch.classList.remove('active');
+  oneCard.hidden = false; batchCard.hidden = true;
+  goOne.hidden = false; go.hidden = true;
+  sub.textContent = 'خطة طالبة واحدة، بلا كشف.';
+  out.innerHTML = '';
+}
+tabBatch.addEventListener('click', showBatch);
+tabOne.addEventListener('click', showOne);
+
+const oneTrack = document.getElementById('oneTrack');
+const oneManhajWrap = document.getElementById('oneManhajWrap');
+function syncTrack() {
+  oneManhajWrap.hidden = oneTrack.value === 'تلاوة';
+}
+oneTrack.addEventListener('change', syncTrack);
+syncTrack();
+
+// Only the two digit scripts the tool actually reads a plan code in —
+// Latin and Arabic-Indic — same as what the server accepts.
+const oneLevel = document.getElementById('oneLevel');
+oneLevel.addEventListener('input', () => {
+  const kept = oneLevel.value.match(/[0-9٠-٩]/g);
+  oneLevel.value = kept ? kept.join('') : '';
+});
+
 drop.addEventListener('click', () => picker.click());
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
@@ -384,6 +515,39 @@ go.addEventListener('click', async () => {
     go.disabled = false; go.textContent = 'توليد الخطط';
   }
 });
+
+goOne.addEventListener('click', async () => {
+  goOne.disabled = true; goOne.textContent = 'جارٍ التوليد…';
+  out.innerHTML = '';
+  try {
+    const size = document.querySelector('input[name=size]:checked').value;
+    const r = await fetch('/api/generate-one', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        name: document.getElementById('oneName').value,
+        track: oneTrack.value,
+        manhaj: document.getElementById('oneManhaj').value,
+        level: document.getElementById('oneLevel').value,
+        values: values(), size,
+      })});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'خطأ غير متوقع');
+    renderOne(data);
+  } catch (err) {
+    out.innerHTML = '<div class="err">' + escape_(err.message) + '</div>';
+  } finally {
+    goOne.disabled = false; goOne.textContent = 'توليد الخطة';
+  }
+});
+
+function renderOne(d) {
+  out.innerHTML = '<div class="ok"><h2>وُلّدت خطة ' + escape_(d.name) + '</h2></div>' +
+    '<button class="ghost" id="dl">تنزيل الخطة</button>';
+  document.getElementById('dl').addEventListener('click', () => {
+    location.href = '/api/download?token=' + d.token;
+  });
+  document.getElementById('dl').click();
+}
 
 function escape_(s) {
   const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
@@ -465,20 +629,20 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/download":
             token = (parse_qs(parsed.query).get("token") or [""])[0]
-            payload = PENDING.take(token)
-            if payload is None:
+            entry = PENDING.take(token)
+            if entry is None:
                 self._json(404, {"error": "انتهت صلاحية الرابط — أعيدي التوليد"})
                 return
-            name = "khutat.zip"
+            payload, content_type, filename = entry
+            fallback = "khutat.zip" if content_type == "application/zip" else "khutat.pdf"
             self._send(
                 200,
                 payload,
-                "application/zip",
+                content_type,
                 {
                     "Content-Disposition":
-                        f"attachment; filename={name}; "
-                        "filename*=UTF-8''%D8%AE%D8%B7%D8%B7-%D8%A7%D9%84%D8%B7%D8%A7"
-                        "%D9%84%D8%A8%D8%A7%D8%AA.zip"
+                        f"attachment; filename={fallback}; "
+                        f"filename*=UTF-8''{_quote(filename)}"
                 },
             )
             return
@@ -490,37 +654,69 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        path = urlparse(self.path).path
         try:
-            if urlparse(self.path).path != "/api/generate":
-                self._json(404, {"error": "not found"})
-                return
-
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0 or length > _MAX_UPLOAD_BYTES * 2:
                 raise ValueError("حجم الطلب غير مقبول")
             payload = json.loads(self.rfile.read(length))
 
-            try:
-                data = base64.b64decode(payload.get("roster", ""), validate=True)
-            except (binascii.Error, ValueError):
-                raise ValueError("تعذّرت قراءة الملف المرفوع")
-            if not data:
-                raise ValueError("لم يصل أي ملف")
-            if len(data) > _MAX_UPLOAD_BYTES:
-                raise ValueError("الملف أكبر مما ينبغي لكشف طالبات")
-
-            values = {str(k): str(v) for k, v in (payload.get("values") or {}).items()}
-            outcome = run_batch(data, values, compact=payload.get("size") == "compact")
-
-            token = PENDING.put(outcome.archive) if outcome.written else None
-            self._json(
-                200,
-                {"written": outcome.written, "skipped": outcome.skipped, "token": token},
-            )
+            if path == "/api/generate":
+                self._generate(payload)
+            elif path == "/api/generate-one":
+                self._generate_one(payload)
+            else:
+                self._json(404, {"error": "not found"})
         except ValueError as error:
             self._json(400, {"error": str(error)})
         except Exception as error:  # surfaced in the page, not the terminal
             self._json(500, {"error": f"{type(error).__name__}: {error}"})
+
+    def _generate(self, payload: dict) -> None:
+        try:
+            data = base64.b64decode(payload.get("roster", ""), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("تعذّرت قراءة الملف المرفوع")
+        if not data:
+            raise ValueError("لم يصل أي ملف")
+        if len(data) > _MAX_UPLOAD_BYTES:
+            raise ValueError("الملف أكبر مما ينبغي لكشف طالبات")
+
+        values = {str(k): str(v) for k, v in (payload.get("values") or {}).items()}
+        outcome = run_batch(data, values, compact=payload.get("size") == "compact")
+
+        token = (
+            PENDING.put(outcome.archive, "application/zip", "khutat.zip")
+            if outcome.written else None
+        )
+        self._json(
+            200,
+            {"written": outcome.written, "skipped": outcome.skipped, "token": token},
+        )
+
+    def _generate_one(self, payload: dict) -> None:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("اسم الطالبة مطلوب")
+
+        track = str(payload.get("track") or "")
+        if track not in ("حفظ", "تلاوة"):
+            raise ValueError("المسار غير معروف")
+
+        level = _digits_to_int(payload.get("level"), "المستوى")
+
+        manhaj: int | None = None
+        if track == "حفظ":
+            manhaj = _digits_to_int(payload.get("manhaj"), "المنهج")
+
+        student = Student(name=name, manhaj=manhaj, level=level, track=track)
+        values = {str(k): str(v) for k, v in (payload.get("values") or {}).items()}
+        pdf_bytes, filename = run_single(
+            student, values, compact=payload.get("size") == "compact"
+        )
+
+        token = PENDING.put(pdf_bytes, "application/pdf", filename)
+        self._json(200, {"token": token, "name": student.name})
 
 
 def _quote(text: str) -> str:

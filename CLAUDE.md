@@ -133,22 +133,29 @@ development but cannot be redistributed. `assets/fonts/NotoNaskhArabic-Regular.t
 ## Data sources and their state
 
 - **`utq.org.sa/mnahig/`** — curricula 1–4, 70 plans, all PDF. Clean.
-- **A shared Drive folder ("توزيع المستويات")** — curriculum 6, which the site
-  does not publish. Reached only when `KHUTAT_DRIVE_FOLDER` is set; the link is
-  never committed, because the association published its finished plans itself
-  but never published that folder, and shipping it would republish it on their
-  behalf. Without the variable the catalogue is the website alone — 70 plans,
-  all usable, complete for curricula 1-4. Locally the variable lives in `.env`,
-  which is ignored and sourced by the launcher. A workspace, not a library:
-  names are inconsistent
-  (`منهج 6 مستوى 9`, `منهج6-13.pdf`, `منهج٦ مستوى٣٠.docx`, `نسخة منهج 6 مستوى 16`)
-  and most files are Word. Google Docs entries export to PDF by URL and are
-  usable directly; a bare `.docx` upload is refused by `ensure_template`
-  unless `KHUTAT_CONVERT_DOCX` is set, in which case it is rendered to PDF
-  locally with headless LibreOffice (`soffice` must be on `PATH`). That flag
-  is off by default — curricula 1-4 never need it, and most setups won't have
-  LibreOffice installed — so leaving a plan as Word in the folder still means
-  most deployments report it as needing manual conversion.
+- **`KHUTAT_DRIVE_FOLDER`** — one or more Drive folders (comma-separated),
+  read in order so an earlier folder's entry for a plan wins over a later
+  one's. Never committed: locally the variable lives in `.env`, which is
+  ignored and sourced by the launcher.
+  - **The association's own shared Drive folder ("توزيع المستويات")** carries
+    curriculum 6, which the site does not publish. The link is never
+    committed because the association published its finished plans itself
+    but never published that folder, and shipping it would republish it on
+    their behalf. A workspace, not a library: names are inconsistent
+    (`منهج 6 مستوى 9`, `منهج6-13.pdf`, `منهج٦ مستوى٣٠.docx`, `نسخة منهج 6 مستوى 16`)
+    and most files are Word. Google Docs entries export to PDF by URL and are
+    usable directly; a bare `.docx` upload is refused by `ensure_template`,
+    which says which formats it found rather than producing a blank page. A
+    local LibreOffice conversion was tried and rejected — the PDF it produces
+    renders correctly but pypdf reads its text back as the wrong characters,
+    so `detect.py` finds no fields at all. Converting by hand through Google
+    Docs is the path that actually works.
+  - **A second, independent Drive folder** holds curriculum-6 plans that were
+    Word-only in the association's folder, converted to PDF by hand through
+    Google Docs and verified against `detect.py` (0 suspect, correct field
+    counts) before being added here as a second source.
+  Without the variable the catalogue is the website alone — 70 plans, all
+  usable, complete for curricula 1-4.
 - **Curriculum 5 and the recitation (تلاوة) track have no digital plans.**
   Students on them are skipped by name. This is not a bug to fix in code.
 

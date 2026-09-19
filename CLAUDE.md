@@ -2,221 +2,128 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What this project does
+## ما يفعله المشروع
 
-Quran-memorisation teachers at the Unaizah association hand every student a
-printed daily study plan. The association publishes those plans as PDF
-templates with a blank header — student name, halaqah, centre, teacher — which
-teachers currently fill in by hand, once per student per term.
+معلمات حلقات التحفيظ في جمعية عنيزة يسلّمن كل طالبة خطة يومية مطبوعة. تنشر الجمعية هذه الخطط قوالبَ PDF بترويسة فارغة (اسم الطالبة، الحلقة، الدار، المعلمة)، وتعبّئها المعلمة بيدها لكل طالبة كل فصل.
 
-This tool reads a teacher's class export, fetches each student's template, and
-writes the filled plans. The whole job is one command (`khutat.roster`), or
-one button on the bundled web page (`khutat.web`), which also has a
-single-student mode that skips the roster upload entirely.
+هذه الأداة تقرأ كشف الصف المصدَّر من نظام إنجاز، وتجلب قالب كل طالبة، وتكتب الخطط معبّأة. العمل كله أمر واحد (`khutat.roster`)، أو زر واحد في الصفحة المرفقة (`khutat.web`)، وفي الصفحة أيضًا وضع لطالبة واحدة لا يحتاج رفع كشف.
 
-The user is a beginner programmer and the repository's owner; she is learning
-from this project as well as using it. Explain *why* a change is shaped the way
-it is, not just what it does.
+صاحبة المستودع مبرمجة مبتدئة، وتتعلّم من المشروع وهي تستعمله. **اشرح لماذا صُمّم التغيير هكذا، لا ماذا فعل فقط.** وخاطبها بالعربية.
 
-## Setup
+## التهيئة
 
 ```bash
 .venv/bin/python -m pip install -e .
 ```
 
-The package must be installed editable or `python -m khutat.*` will not
-resolve. Always invoke `.venv/bin/python` explicitly.
+التثبيت القابل للتعديل (`-e`) شرط، وإلا لن يُعثر على `python -m khutat.*`. استعمل دائمًا `.venv/bin/python` صراحةً.
 
-## Commands
+## الأوامر
 
 ```bash
-# Survey every template in a directory: layout, page counts, fields found
+# مسح كل القوالب في مجلد: النمط، عدد الصفحات، الخانات المكتشفة
 .venv/bin/python -m khutat.templates templates
 
-# Same, plus a copy of each template with the detected boxes outlined
+# وكذلك نسخة من كل قالب مرسوم عليها الخانات المكتشفة
 .venv/bin/python -m khutat.templates templates --overlay out/detected
 
-# Index the association's plan sources (network); --refresh re-reads them
+# فهرسة مصادر القوالب (شبكة)؛ --refresh يعيد القراءة
 .venv/bin/python -m khutat.catalogue --refresh
-.venv/bin/python -m khutat.catalogue --get 1 4     # fetch one plan, print its path
+.venv/bin/python -m khutat.catalogue --get 1 4     # تنزيل خطة واحدة (منهج ١، مستوى ٤)
 
-# Fill one template by hand
+# تعبئة قالب واحد يدويًّا
 .venv/bin/python -m khutat.fill TEMPLATE OUT.pdf \
   --font assets/fonts/NotoNaskhArabic-Regular.ttf \
   --set "اسم الطالب=فاطمة الشمري"
 
-# The real entry point: one plan per student from an Injaz export
+# المدخل الحقيقي: خطة لكل طالبة من كشف إنجاز (--list يعرض ولا يولّد)
 .venv/bin/python -m khutat.roster ROSTER.xlsx out/plans \
   --font assets/fonts/NotoNaskhArabic-Regular.ttf \
   --size مصغرة \
   --set "الحلقة=حلقة النور" --set "اسم المعلم=نورة القحطاني"
-```
 
-`--size مكبرة` (default) is one page per sheet; `مصغرة` is four to a sheet.
-
-```bash
-# The page teachers actually use; --host 0.0.0.0 only when hosted
+# الصفحة التي تستعملها المعلمات؛ --host 0.0.0.0 فقط عند الاستضافة، والمنفذ من PORT
 .venv/bin/python -m khutat.web
 ```
 
-## Verifying a change
+`--size مكبرة` (الافتراضي) صفحة بالورقة، و`مصغرة` أربع صفحات بالورقة.
 
-**There is no test suite.** `pytest` is in the dev extra and `tests/` is empty.
-Verification is done by running the pipeline over real templates and looking:
+## التحقق من أي تغيير
 
-1. `khutat.templates templates` and `khutat.templates .cache/khutat/templates` —
-   field counts must not drop. Known-good: the imposed template yields 21
-   fields, the full-size one 19, each plan downloaded from the site 21.
-2. `--overlay`, then `pdftoppm -png -r 80 FILE.pdf OUT` and read the image.
-   **A field count never proves correctness** — it cannot distinguish a box in
-   the right cell from one that landed on the neighbour. Look at the page.
-3. For fill changes, also try a short name, an over-long one, a value with
-   digits, and a mixed Arabic/Latin value.
+**لا توجد اختبارات آلية.** `pytest` في الإضافات التطويرية، و`tests/golden/` مجلد فارغ. التحقق يكون بتشغيل خط الإنتاج على قوالب حقيقية والنظر:
 
-Never claim a detection or fill change works without having looked at a
-rendered page.
+1. `khutat.templates templates` و`khutat.templates .cache/khutat/templates`، ويجب ألا ينقص عدد الخانات. القيم المعروفة الصحيحة: القالب المركّب ٢١ خانة، والكامل ١٩، وكل خطة من الموقع ٢١.
+2. `--overlay` ثم `pdftoppm -png -r 80 FILE.pdf OUT` واقرأ الصورة. **عدد الخانات لا يثبت الصحة أبدًا**؛ لا يفرّق بين خانة في مكانها وخانة سقطت على جارتها. انظر إلى الصفحة.
+3. لتغييرات التعبئة جرّب أيضًا: اسمًا قصيرًا، واسمًا طويلًا جدًّا، وقيمة فيها أرقام، وقيمة مخلوطة عربي/لاتيني.
+4. لتغييرات قراءة الكشف: **اقرأ غلاف الخطة المولَّدة**، فهو يطبع رقم منهجها ومستواها بنفسه.
 
-## Pipeline
+لا تقل إن تغييرًا في الاكتشاف أو التعبئة يعمل قبل أن ترى صفحة مرسومة.
+
+## خط الإنتاج
 
 ```
-roster.py     reads the Injaz .xlsx, one Student per row
-  └─ catalogue.py   finds and downloads that student's template (cached)
-      └─ imposition.to_single_pages   normalises to one logical page per page
-          └─ detect.py                finds the header fields
-              └─ fill.py              draws the values
-                  └─ imposition.impose   optional, four pages to a sheet
+roster.py     يقرأ كشف إنجاز، طالبة لكل صف
+  └─ catalogue.py   يجد قالب الطالبة وينزّله (مع تخزين)
+      └─ imposition.to_single_pages   يوحّد القالب: صفحة منطقية لكل صفحة
+          └─ detect.py                يكتشف خانات الترويسة
+              └─ fill.py              يرسم القيم
+                  └─ imposition.impose   اختياري: أربع صفحات بالورقة
 ```
 
-Two ordering rules are load-bearing:
+`web.py` لا يملك مسارًا خاصًّا به. وضع الطالبة الواحدة (`/api/generate-one`، ويستقبل الاسم والمنهج والمستوى أو المسار) يبني `Student` ويمرّره إلى `roster.generate` نفسها، فتصل الطالبة التي لا قالب لها برسالة الكشف ذاتها.
 
-- **De-impose before detecting.** Coordinates inside a nested form collapse
-  onto each other otherwise.
-- **Impose last.** `impose` inlines content rather than nesting forms, so its
-  output is a finished artefact that `is_imposed` will not recognise and
-  cannot be split again.
+قاعدتا ترتيب لا يجوز كسرهما:
 
-## What is non-obvious
+- **فكّ التركيب قبل الاكتشاف.** وإلا انطبقت إحداثيات النماذج المتداخلة بعضها على بعض.
+- **التركيب آخرًا.** `impose` يدمج المحتوى في مجرى الورقة بدل أن يلفّه نماذج، فناتجه منتج نهائي لا يتعرّف عليه `is_imposed` ولا يُفكّ ثانية.
 
-**Templates arrive in two layouts.** Some are imposed — one A4 sheet carrying
-four half-scale pages as Form XObjects; others are already one page per page.
-`is_imposed` decides by inspecting the file, never by configuration: the
-library is ~120 plans and growing, and a per-file setting is one more thing to
-get wrong.
+## ما ليس بديهيًّا
 
-**Coordinates mean nothing without the matrix.** `detect.read_cells` walks the
-content stream tracking `q`/`Q`/`cm` and maps every rectangle's corners.
-The association's own PDFs set no transformation at all, so raw coordinates
-happened to work for years of them — but a plan converted from Word flips the
-y axis and scales by 0.75. Never reintroduce a regex scan for `re`.
+**القوالب تأتي بنمطين.** بعضها مركّب: ورقة A4 عليها أربع صفحات مصغّرة كنماذج Form XObject، وبعضها صفحة لكل صفحة. `is_imposed` يقرّر بفحص الملف، لا بإعداد؛ فالمكتبة نحو ١٢٠ خطة وتكبر، وكل إعداد لكل ملف فرصة أخرى للخطأ.
 
-**Arabic needs two passes before drawing.** `arabic_reshaper.reshape` then
-`bidi.get_display`, in that order. After them the string is presentation-form
-glyphs in visual order: draw it or measure it, nothing else. Every text
-operation — trimming, truncating, normalising — belongs *before* the reshape.
-Cutting a shaped string removes the name's first letters, not its last.
+**الإحداثيات بلا المصفوفة لا تعني شيئًا.** `detect.read_cells` يمشي في مجرى المحتوى ويتتبّع `q`/`Q`/`cm` ويحوّل أركان كل مستطيل. قوالب الجمعية لا تضع أي مصفوفة، فعملت الإحداثيات الخام مصادفةً، لكن الخطة المحوّلة من Word تقلب المحور الرأسي وتصغّر ٠٫٧٥. لا تُرجع أبدًا مسحًا بتعبير نمطي عن `re`.
 
-**Label matching folds presentation forms.** `detect.normalise` applies NFKC
-because some producers store shaped glyphs rather than abstract letters, so
-`"اسم الطالب"` and `"اﺳم اﻟطﺎﻟب"` must compare equal.
+**العربية تحتاج مرحلتين قبل الرسم.** `arabic_reshaper.reshape` ثم `bidi.get_display` بهذا الترتيب. بعدهما يصير النص صورًا تقديمية بترتيب بصري: يُرسم أو يُقاس فقط. كل عملية على النص (قصّ، تنظيف، توحيد) تسبق التشكيل؛ فقصّ النص المشكَّل يحذف **أول** الاسم لا آخره.
 
-**Fields are found by geometry, never by coordinates.** A label is located by
-text, its cell by the rectangles the template draws, and its value cell is the
-one to its left. Cells nest — a label too wide for its column wraps onto two
-stacked line-boxes — so a chunk counts towards every cell containing it and
-label cells are tried tightest-first. A value cell that already holds text is
-pre-filled by the association and must be left alone.
+**مطابقة التسميات تردّ الصور التقديمية.** `detect.normalise` يطبّق NFKC لأن بعض البرامج تخزّن الحروف مشكّلة، فيجب أن يتساوى `"اسم الطالب"` و`"اﺳم اﻟطﺎﻟب"`.
 
-**The font is always a parameter.** macOS ships Arabic faces that work for
-development but cannot be redistributed. `assets/fonts/NotoNaskhArabic-Regular.ttf`
-(SIL OFL 1.1, with its `OFL.txt`) is bundled, but nothing defaults to it.
+**الخانات تُكتشف بالهندسة لا بالإحداثيات.** يُعثر على التسمية نصًّا، ثم على الخلية المرسومة التي تحويها، ثم على الخلية التي على يسارها. الخلايا تتداخل (تسمية أعرض من عمودها تُلفّ على سطرين في خليتين متراكبتين)، فيُحتسب النص لكل خلية تحويه، وتُجرّب الأضيق أولًا. والخلية التي فيها نص عبّأته الجمعية مسبقًا، فتُترك.
 
-## Data sources and their state
+**الخط وسيط دائمًا.** خطوط macOS العربية تصلح للتطوير ولا يجوز توزيعها. `assets/fonts/NotoNaskhArabic-Regular.ttf` (رخصة SIL OFL 1.1 مع `OFL.txt`) مرفق، ولا شيء في المكتبة يفترضه. الصفحة وحدها تختاره افتراضيًّا، وهذا قرار نشر.
 
-- **`utq.org.sa/mnahig/`** — curricula 1–4, 70 plans, all PDF. Clean.
-- **`KHUTAT_DRIVE_FOLDER`** — one or more Drive folders (comma-separated),
-  read in order so an earlier folder's entry for a plan wins over a later
-  one's. Never committed: locally the variable lives in `.env`, which is
-  ignored and sourced by the launcher.
-  - **The association's own shared Drive folder ("توزيع المستويات")** carries
-    curriculum 6, which the site does not publish. The link is never
-    committed because the association published its finished plans itself
-    but never published that folder, and shipping it would republish it on
-    their behalf. A workspace, not a library: names are inconsistent
-    (`منهج 6 مستوى 9`, `منهج6-13.pdf`, `منهج٦ مستوى٣٠.docx`, `نسخة منهج 6 مستوى 16`)
-    and most files are Word. Google Docs entries export to PDF by URL and are
-    usable directly; a bare `.docx` upload is refused by `ensure_template`,
-    which says which formats it found rather than producing a blank page. A
-    local LibreOffice conversion was tried and rejected — the PDF it produces
-    renders correctly but pypdf reads its text back as the wrong characters,
-    so `detect.py` finds no fields at all. Converting by hand through Google
-    Docs is the path that actually works.
-  - **A second, independent Drive folder** holds curriculum-6 plans that were
-    Word-only in the association's folder, converted to PDF by hand through
-    Google Docs and verified against `detect.py` (0 suspect, correct field
-    counts) before being added here as a second source.
-  Without the variable the catalogue is the website alone — 70 plans, all
-  usable, complete for curricula 1-4.
-- **Curriculum 5 and the recitation (تلاوة) track have no digital plans.**
-  Students on them are skipped by name. This is not a bug to fix in code.
+## مصادر البيانات وحالها
 
-**The Injaz export** packs the student's name and plan code into column A
-separated by a run of spaces: `فاطمة عبدالله الشمري    4 - 3` means
-curriculum 4, level 3 — curriculum first. The recitation track writes تلاوة in
-the curriculum slot (`تلاوة-1` is recitation, level 1), which settles the order.
-It is easy to get backwards: Injaz shows the code inside right-to-left text,
-where bidi can swap the two numbers on screen. This was once implemented level
-first, and every plan came out for the wrong curriculum — verify a change here
-by reading the generated plan's cover, which prints its own curriculum and
-level. Match the code by its pattern at the end of the
-string; splitting on whitespace truncates names that contain double spaces.
-Injaz also writes a stylesheet `openpyxl` refuses to load and stores cells as
-inline strings, which is why the sheet XML is read directly.
+- **`utq.org.sa/mnahig/`**: المناهج ١–٤، سبعون خطة، كلها PDF. نظيف.
+- **`KHUTAT_DRIVE_FOLDER`**: مجلد Drive أو أكثر (مفصولة بفواصل)، تُقرأ بالترتيب، فمدخل المجلد الأسبق لخطة ما يغلب اللاحق. لا يُلتزم في Git أبدًا؛ محليًّا في `.env` (متجاهَل، ويقرؤه المشغّل)، وعلى Render في لوحة التحكم.
+  - **مجلد الجمعية المشترك («توزيع المستويات»)** فيه المنهج السادس الذي لا ينشره الموقع. لا يُنشر رابطه لأن الجمعية نشرت خططها المكتملة بنفسها ولم تنشر هذا المجلد. مساحة عمل لا مكتبة: الأسماء غير موحّدة (`منهج 6 مستوى 9`، `منهج6-13.pdf`، `منهج٦ مستوى٣٠.docx`، `نسخة منهج 6 مستوى 16`) وأغلب الملفات Word. مدخلات Google Docs تُصدَّر PDF برابط وتصلح مباشرة، وملف `.docx` المرفوع كما هو يرفضه `ensure_template` ويذكر الصيغ التي وجدها بدل إخراج صفحة فارغة.
+  - **جُرّب تحويل Word محليًّا بـLibreOffice ورُفض:** الملف الناتج يُعرض سليمًا، لكن pypdf يقرأ نصّه حروفًا خاطئة فلا يجد `detect.py` أي خانة. الطريق الذي يعمل هو التحويل يدويًّا عبر Google Docs.
+  - **مجلد Drive ثانٍ مستقل** فيه خطط منهج ٦ التي كانت Word فقط، حُوّلت يدويًّا عبر Google Docs وتُحقّق منها بـ`detect.py` (صفر مشبوه) قبل إضافته مصدرًا.
 
-## The web page is stateless on purpose
+  بلا المتغيّر يبقى الموقع وحده: ٧٠ خطة كلها صالحة، كاملة للمناهج ١–٤.
+- **المنهج الخامس ومسار التلاوة بلا خطط رقمية.** طالباتهما يُتخطَّين بأسمائهن. هذا ليس عيبًا يُصلَح بالكود.
 
-`web.py` began as a convenience for one teacher on her own Mac, where a
-settings file and a fixed output folder were fine. Both became faults the
-moment a second teacher could reach it, and the fix is the design:
+**كشف إنجاز** يحشر اسم الطالبة ورمز خطتها في العمود A، يفصلهما فراغ طويل: `فاطمة عبدالله الشمري    4 - 3` تعني **المنهج ٤، المستوى ٣: المنهج أولًا.** مسار التلاوة يكتب «تلاوة» في خانة المنهج (`تلاوة-1` = التلاوة، المستوى ١)، وهذا ما يحسم الترتيب. **سهل أن يُعكس:** إنجاز يعرض الرمز داخل نص من اليمين لليسار، فقد يتبادل الرقمان موضعيهما على الشاشة. نُفّذ مرة بالمستوى أولًا فخرجت كل خطة لمنهج خاطئ دون أي خطأ ظاهر، لأن التركيبتين موجودتان غالبًا في الفهرس. التقط الرمز بنمطه من آخر النص؛ الفصل عند الفراغات يبتر الأسماء التي فيها فراغات مزدوجة. وإنجاز يكتب ورقة أنماط يرفضها `openpyxl` ويخزّن الخلايا نصوصًا مضمّنة، لذلك يُقرأ XML الورقة مباشرة، ويُحدّ حجم كل جزء بعد فكّ الضغط (قنابل الضغط).
 
-- **Her details live in her browser** (`localStorage`), never on the server. A
-  server-side settings file is one file: the last teacher to type would
-  overwrite everyone, and the next would find another woman's halaqah and name
-  prefilled — and could generate a whole class under the wrong teacher's name.
-- **Each request gets its own temp directory**, zipped (batch mode) or read
-  directly (single-student mode) and removed in a `finally`. A fixed output
-  folder is one folder, and two teachers generating at once would mix their
-  students into it.
-- **The finished file waits in memory under a single-use token** with a TTL —
-  a zip for the batch path, a bare PDF for the single-student path — so a
-  class list never reaches the server's disk beyond the temp directory that
-  produced it. Request logging is disabled for the same reason.
+## الصفحة بلا حالة عمدًا
 
-Do not add a server-side store, a fixed output path, or an endpoint that runs
-a command on the host — an earlier `/api/reveal` called `open` and had to go.
+بدأ `web.py` أداةً لمعلمة واحدة على جهازها، حيث كان ملف إعدادات ومجلد مخرجات ثابت مقبولين. صار كلاهما عيبًا لحظة وصول معلمة ثانية، والإصلاح هو التصميم:
 
-**Never put a real student's name in this repository.** Examples in docs and
-docstrings use invented ones (فاطمة عبدالله الشمري); the roster that exercises
-the real pipeline stays outside the repo, and `out/`, `.cache/` and `sandbox/`
-are ignored.
+- **بيانات المعلمة في متصفحها** (`localStorage`) لا على الخادم. ملف الإعدادات على الخادم ملف واحد: آخر من تكتب تمسح الجميع، والتالية تجد حلقة معلمة أخرى واسمها مملوءين، وقد تولّد صفًّا كاملًا باسم غيرها.
+- **لكل طلب مجلد مؤقت خاص** يُضغط (وضع الكشف) أو يُقرأ مباشرة (وضع الطالبة الواحدة) ثم يُحذف في `finally`. مجلد ثابت يخلط طالبات معلمتين تولّدان معًا.
+- **الملف الجاهز ينتظر في الذاكرة برمز يُستعمل مرة واحدة** وله مهلة: zip للكشف وPDF للطالبة الواحدة. فلا يصل كشف إلى قرص الخادم إلا المجلد المؤقت، وتسجيل الطلبات معطَّل للسبب نفسه.
+- **حدود ضد الإسقاط:** حجم الرفع، وحجم كل جزء من ملف Excel بعد فكّ الضغط، و٢٠٠ طالبة للطلب في الصفحة. الحد الأخير في الصفحة وحدها؛ سطر الأوامر بلا حد.
 
-## Deployment
+لا تضف مخزنًا على الخادم، ولا مسار مخرجات ثابتًا، ولا مسارًا ينفّذ أمرًا على الجهاز المضيف؛ مسار `/api/reveal` القديم كان يستدعي `open` وحُذف.
 
-`render.yaml` deploys the page to Render as a single free-tier instance — the
-page holds no state between requests, so restarting it loses nothing but the
-template cache, which refills itself on the next request. `KHUTAT_WHATSAPP`,
-`KHUTAT_CREDIT` and `KHUTAT_DRIVE_FOLDER` are set in Render's dashboard rather
-than the file, for the same reason `.env` isn't committed locally: the number
-and the association's working folder can change without a commit, and a
-colleague hosting her own copy puts in her own.
+**لا تضع اسم طالبة حقيقية في المستودع أبدًا.** الأمثلة في التوثيق وتعليقات الكود بأسماء مخترعة (فاطمة عبدالله الشمري)، والكشف الحقيقي يبقى خارج المستودع. وكذلك **قوالب الجمعية التي لم تنشرها**: مجلد `Mnhaj6/` في الجذر فيه خطط منهج ٦ وأرشيف منهج ٥ من مجلد العمل، ومتجاهَل في Git لهذا السبب. لا تستعمل `git add -A` دون مراجعة ما سيُضاف.
 
-## Conventions
+## النشر
 
-- **Exit status 1 means something needs a human.** A template where detection
-  found nothing, a student who was skipped, a `--set` label that matched no
-  field. Keep new failure modes visible this way rather than silent.
-- **Commit messages explain why.** Imperative subject line, then a body giving
-  the reasoning and the verification performed — the code already shows what
-  changed. Commits are authored by the repository owner with a
-  `Co-Authored-By:` trailer for whichever Claude model made the change.
-- `out/`, `.cache/`, and `sandbox/` are ignored; `sandbox/` is the owner's
-  scratch space for experiments.
+`render.yaml` ينشر الصفحة على Render نسخةً واحدة على الخطة المجانية. الصفحة بلا حالة بين الطلبات، فإعادة تشغيلها لا تُضيّع إلا مخزن القوالب، ويمتلئ من جديد مع الطلب التالي. `KHUTAT_WHATSAPP` و`KHUTAT_CREDIT` و`KHUTAT_DRIVE_FOLDER` تُضبط في لوحة Render لا في الملف: الرقم والمجلد قد يتغيّران بلا التزام، ومن تستضيف نسختها تضع قيمها.
+
+## الأعراف
+
+- **رمز الخروج ١ يعني أن شيئًا يحتاج إنسانًا:** قالب لم يُكتشف فيه شيء، أو طالبة تُخطّيت، أو تسمية في `--set` لم تطابق خانة. أي حالة فشل جديدة تُظهَر بهذه الطريقة لا تُسكت.
+- **رسائل الالتزام تشرح لماذا:** سطر أول بصيغة الأمر (بالإنجليزية)، ثم متن فيه السبب والتحقق الذي أُجري، فالكود يُظهر ما تغيّر. الالتزامات باسم صاحبة المستودع مع سطر `Co-Authored-By:` للنموذج الذي أجرى التغيير.
+- المستودع علني على `github.com/meem298/khutat` برخصة MIT (الشيفرة وحدها؛ الخط والقوالب لهما ترخيصهما).
+- `out/` و`.cache/` و`sandbox/` و`Mnhaj6/` متجاهَلة؛ `sandbox/` مساحة صاحبة المستودع للتجارب.

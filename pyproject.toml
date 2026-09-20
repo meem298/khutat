@@ -5,12 +5,17 @@ description = "مولّد خطط الحلقات القرآنية — يعبّئ 
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
+# Upper bounds are deliberate. A deploy runs `pip install` afresh, so without
+# them a new major release of any of these would reach the running page before
+# anyone had tried it — and reportlab has already gone 4 to 5 during this
+# project's life. Tested against pypdf 6.17.0, reportlab 5.0.1,
+# arabic-reshaper 3.0.1, python-bidi 0.6.11, Pillow 12.3.0 on Python 3.14.4.
 dependencies = [
-    "pypdf>=6.0",
-    "reportlab>=4.0",
-    "arabic-reshaper>=3.0",
-    "python-bidi>=0.6",
-    "Pillow>=11.0",
+    "pypdf>=6.0,<7",
+    "reportlab>=4.0,<6",
+    "arabic-reshaper>=3.0,<4",
+    "python-bidi>=0.6,<1",
+    "Pillow>=11.0,<13",
 ]
 
 [project.optional-dependencies]

@@ -14,8 +14,12 @@ services:
     startCommand: python -m khutat.web --host 0.0.0.0 --port $PORT --no-browser
     healthCheckPath: /healthz
     envVars:
+      # Pinned to the version the tests are run on. Render accepts any
+      # released version, so there is no reason to deploy on one nobody
+      # checked: the XML and decompression refusals depend on the standard
+      # library's parser, which differs between versions.
       - key: PYTHON_VERSION
-        value: "3.12"
+        value: "3.14.4"
       # Set in Render's dashboard, not here, so the number can change without
       # a commit — and so a colleague hosting her own copy puts in her own.
       - key: KHUTAT_WHATSAPP

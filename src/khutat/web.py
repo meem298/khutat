@@ -295,6 +295,7 @@ PAGE = """<!doctype html>
   .ghost:hover { background:var(--ok-bg); }
   .hint { font-size:13px; color:var(--muted); margin-top:9px; }
   .result h2 { font-size:18px; margin:0 0 10px; }
+  .for-whom { margin:6px 0 0; font-size:15px; }
   .ok { background:var(--ok-bg); border:1px solid #cfe3d9; border-radius:11px;
         padding:15px 17px; margin-bottom:14px; }
   .warn { background:var(--warn-bg); border:1px solid #f0dfae; border-radius:11px;
@@ -541,7 +542,11 @@ goOne.addEventListener('click', async () => {
 });
 
 function renderOne(d) {
-  out.innerHTML = '<div class="ok"><h2>وُلّدت خطة ' + escape_(d.name) + '</h2></div>' +
+  // The name is labelled and set apart rather than run into the sentence.
+  // Run in, "وُلّدت خطة اختبار" reads as a kind of plan rather than as one
+  // student's, which is exactly how the first teacher to try it read it.
+  out.innerHTML = '<div class="ok"><h2>الخطة جاهزة</h2>' +
+    '<p class="for-whom">الطالبة: <b>' + escape_(d.name) + '</b></p></div>' +
     '<button class="ghost" id="dl">تنزيل الخطة</button>';
   document.getElementById('dl').addEventListener('click', () => {
     location.href = '/api/download?token=' + d.token;
@@ -631,7 +636,7 @@ class Handler(BaseHTTPRequestHandler):
             token = (parse_qs(parsed.query).get("token") or [""])[0]
             entry = PENDING.take(token)
             if entry is None:
-                self._json(404, {"error": "انتهت صلاحية الرابط — أعيدي التوليد"})
+                self._json(404, {"error": "انتهت صلاحية الرابط — يلزم توليد الخطة من جديد"})
                 return
             payload, content_type, filename = entry
             fallback = "khutat.zip" if content_type == "application/zip" else "khutat.pdf"
